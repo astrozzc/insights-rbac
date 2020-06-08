@@ -18,7 +18,7 @@
 import logging
 
 from django.core.management.base import BaseCommand
-from management.seeds import group_seeding, role_seeding
+from management.seeds import group_seeding, permission_seeding, role_seeding
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -30,17 +30,23 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         """Add arguments to command."""
+        parser.add_argument("--permissions-only", action="store_true")
         parser.add_argument("--roles-only", action="store_true")
         parser.add_argument("--groups-only", action="store_true")
 
     def handle(self, *args, **options):
         """Handle method for command."""
-        if not options["groups_only"]:
+        if options["permissions_only"]:
+            logger.info("*** Seeding permissions... ***")
+            permission_seeding()
+            logger.info("*** Permission seeding completed. ***\n")
+
+        if options["roles_only"]:
             logger.info("*** Seeding roles... ***")
             role_seeding()
             logger.info("*** Role seeding completed. ***\n")
 
-        if not options["roles_only"]:
+        if options["groups_only"]:
             logger.info("*** Seeding groups... ***")
             group_seeding()
             logger.info("*** Group seeding completed. ***\n")

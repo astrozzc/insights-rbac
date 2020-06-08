@@ -32,33 +32,28 @@ def on_complete(completed_log_message, future):
 
 def role_seeding():
     """Update any roles at startup."""
-    # noqa: E402 pylint: disable=C0413
-    from api.models import Tenant
     from management.role.definer import seed_roles
-    from rbac.settings import MAX_SEED_THREADS
 
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_SEED_THREADS) as executor:
-            tenants = Tenant.objects.all()
-            tenant_count = tenants.count()
-            for idx, tenant in enumerate(list(tenants)):
-                if tenant.schema_name != "public":
-                    logger.info(f"Seeding role changes for tenant {tenant.schema_name} [{idx + 1} of {tenant_count}].")
-                    future = executor.submit(seed_roles, tenant, update=True)
-                    completed_log_message = (
-                        "Finished seeding role changes for tenant "
-                        f"{tenant.schema_name} [{idx + 1} of {tenant_count}]."
-                    )
-                    future.add_done_callback(partial(on_complete, completed_log_message))
-    except Exception as exc:
-        logger.error(f"Error encountered during role seeding {exc}.")
+    do_seeding(seed_roles, "role")
 
 
 def group_seeding():
     """Update platform group at startup."""
-    # noqa: E402 pylint: disable=C0413
-    from api.models import Tenant
     from management.group.definer import seed_group
+
+    do_seeding(seed_group, "group")
+
+
+def permission_seeding():
+    """Update platform group at startup."""
+    from management.role.definer import seed_permissions
+
+    do_seeding(seed_permissions, "permission")
+
+
+def do_seeding(seed_function, target):
+    """General function for seeding."""
+    from api.models import Tenant
     from rbac.settings import MAX_SEED_THREADS
 
     try:
@@ -68,13 +63,13 @@ def group_seeding():
             for idx, tenant in enumerate(list(tenants)):
                 if tenant.schema_name != "public":
                     logger.info(
-                        f"Seeding group changes for tenant {tenant.schema_name} [{idx + 1} of {tenant_count}]."
+                        f"Seeding {target} changes for tenant " f"{tenant.schema_name} [{idx + 1} of {tenant_count}]."
                     )
-                    future = executor.submit(seed_group, tenant)
+                    future = executor.submit(seed_function, tenant, update=True)
                     completed_log_message = (
-                        "Finished seeding group changes for tenant "
+                        f"Finished seeding {target} changes for tenant "
                         f"{tenant.schema_name} [{idx + 1} of {tenant_count}]."
                     )
                     future.add_done_callback(partial(on_complete, completed_log_message))
     except Exception as exc:
-        logger.error(f"Error encountered during group seeding {exc}.")
+        logger.error(f"Error encountered during {target} seeding {exc}.")

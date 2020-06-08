@@ -88,6 +88,7 @@ Seeds
 
 Default roles and groups are automatically seeded when the application starts by default unless either of the following environment variables are set to 'False' respectively: ::
 
+  PERMISSION_SEEDING_ENABLED
   ROLE_SEEDING_ENABLED
   GROUP_SEEDING_ENABLED
 
