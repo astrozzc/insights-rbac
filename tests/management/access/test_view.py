@@ -28,6 +28,7 @@ from tenant_schemas.utils import tenant_context
 
 from api.models import User
 from management.models import Group, Principal, Policy, Role, Access
+from management.role.model import Permission
 from tests.identity_request import IdentityRequest
 
 
@@ -56,6 +57,9 @@ class AccessViewTests(IdentityRequest):
             self.group.save()
             self.group.principals.add(self.principal)
             self.group.save()
+            Permission.objects.create(permission="catalog:resource1:verb1")
+            Permission.objects.create(permission="catalog:resource2:verb1")
+            Permission.objects.create(permission="approval:resource1:verb1")
 
     def tearDown(self):
         """Tear down access view tests."""
@@ -235,3 +239,42 @@ class AccessViewTests(IdentityRequest):
         client = APIClient()
         response = client.get(url, **self.headers)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_scope_error(self):
+        """Test that we get expected failure when scope key is not valid."""
+        url = "{}?scope={}".format(reverse("access"), "acout")
+        client = APIClient()
+        response = client.get(url, **self.headers)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_returning_account_permissions(self):
+        """Test that all permissions are returned when scope is account."""
+        url = "{}?scope={}".format(reverse("access"), "account")
+        client = APIClient()
+        response = client.get(url, **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data.get("data"), list)
+        self.assertTrue(len(response.data.get("data")))
+
+    def test_parameter_limit_is_working_when_returning_permissions(self):
+        """Test that  when scope is account."""
+        url = "{}?scope={}&limit=2".format(reverse("access"), "account")
+        client = APIClient()
+        response = client.get(url, **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data.get("data"), list)
+        self.assertEqual(len(response.data.get("data")), 2)
+
+    def test_filters_are_working_when_returning_permissions(self):
+        """Test that  when scope is account."""
+        url = "{}?scope={}&application={}&resource_type={}&verb={}".format(
+            reverse("access"), "account", "catalog,approval", "resource1", "verb1"
+        )
+        client = APIClient()
+        response = client.get(url, **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data.get("data"), list)
+        self.assertEqual(response.data.get("data"), ["catalog:resource1:verb1", "approval:resource1:verb1"])

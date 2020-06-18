@@ -1678,8 +1678,26 @@
           {
             "name": "application",
             "in": "query",
-            "description": "The application name(s) to obtain access for the principal. This is an exact match. When no application is supplied, all permissions for the principal are returned. You may also use a comma-separated list to match on multiple applications.",
+            "description": "The application name(s) to obtain access/permission for the principal/account. This is an exact match. When no application is supplied, all accesses/permissions for the principal/account are returned. You may also use a comma-separated list to match on multiple applications.",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "description": "The resource type(s) to obtain permissions of the account. This is an exact match. You may also use a comma-separated list to match on multiple applications.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "verb",
+            "in": "query",
+            "description": "The verb(s) to obtain permissions of the account. This is an exact match. You may also use a comma-separated list to match on multiple applications.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -1691,6 +1709,20 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "description": "Parameter for filtering resource by scope.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "account",
+                "principal"
+              ],
+              "default": "principal"
             }
           },
           {

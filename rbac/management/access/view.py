@@ -18,12 +18,20 @@
 """View for principal access."""
 from management.cache import AccessCache
 from management.querysets import get_access_queryset
+from management.role.model import Permission
 from management.role.serializer import AccessSerializer
-from management.utils import APPLICATION_KEY, get_principal_from_request
+from management.utils import APPLICATION_KEY, get_principal_from_request, validate_and_get_key
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
 from rest_framework.views import APIView
+
+SCOPE_KEY = "scope"
+ACCOUNT_SCOPE = "account"
+PRINCIPAL_SCOPE = "principal"
+
+# Mapping of input parameter to query parameter.
+PERMISSION_FILTERS_MAPPING = {APPLICATION_KEY: "app__in", "resource_type": "resource__in", "verb": "operation__in"}
 
 
 class AccessView(APIView):
@@ -83,7 +91,14 @@ class AccessView(APIView):
         return get_access_queryset(self.request)
 
     def get(self, request):
-        """Provide access data for prinicpal."""
+        """Provide access data for principal."""
+        scope = validate_and_get_key(
+            request.query_params, SCOPE_KEY, [ACCOUNT_SCOPE, PRINCIPAL_SCOPE], PRINCIPAL_SCOPE
+        )
+
+        if scope == ACCOUNT_SCOPE:
+            return self.obtain_paginated_account_permissions(request)
+
         app = request.query_params.get(APPLICATION_KEY)
         principal = get_principal_from_request(request)
         cache = AccessCache(request.tenant.schema_name)
@@ -117,3 +132,19 @@ class AccessView(APIView):
         """Return a paginated style `Response` object for the given output data."""
         assert self.paginator is not None
         return self.paginator.get_paginated_response(data)
+
+    def obtain_paginated_account_permissions(self, request):
+        """Return filtered permissions."""
+        filters = {}
+        for key in PERMISSION_FILTERS_MAPPING.keys():
+            context = request.query_params.get(key)
+            if context:
+                filters[PERMISSION_FILTERS_MAPPING.get(key)] = context.split(",")
+
+        query_set = Permission.objects.filter(**filters).values_list("permission", flat=True)
+        page = self.paginate_queryset(query_set)
+
+        if page is not None:
+            return self.get_paginated_response(page)
+
+        return Response({"data": query_set})
