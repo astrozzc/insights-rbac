@@ -40,6 +40,7 @@ from internal.utils import (
     delete_bindings,
     get_or_create_ungrouped_workspace,
     load_request_body,
+    replicate_workspace_relationships_for_tenant,
     validate_inventory_input,
     validate_relations_input,
 )
@@ -2215,4 +2216,76 @@ def migrate_binding_scope(request):
     return JsonResponse(
         {"message": "Binding scope migration is running in a background worker."},
         status=202,
+    )
+
+@require_http_methods(["POST"])
+def replicate_workspace_relationships(request):
+    """
+    Replicate workspace relationships for given tenants to Relations API.
+
+    POST /_private/api/utils/replicate_workspace_relationships/
+    Body: {"org_ids": ["12345", "67890"]}
+
+    This endpoint replicates workspace parent relationships for ungrouped-hosts and standard workspaces.
+    Root and default workspace relationships are handled by tenant bootstrap.
+
+    This is idempotent and safe to run multiple times.
+    """
+
+    logger.info(f"Replicating workspace relationships: {request.method} {request.user.username}")
+
+    if not request.body:
+        return JsonResponse({"error": "Invalid request, must supply 'org_ids' in body."}, status=400)
+
+    try:
+        org_ids_data = json.loads(request.body.decode("utf-8"))
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON in request body."}, status=400)
+
+    if "org_ids" not in org_ids_data or not isinstance(org_ids_data["org_ids"], list):
+        return JsonResponse(
+            {"error": "Invalid request: the 'org_ids' must be an array in the body."}, status=400
+        )
+
+    org_ids = org_ids_data["org_ids"]
+
+    if len(org_ids) == 0:
+        return JsonResponse(
+            {"error": "Invalid request: the 'org_ids' array must contain at least one org_id."}, status=400
+        )
+
+    logger.info(f"Replicating workspace relationships for {len(org_ids)} org_ids: {org_ids}")
+
+    results = []
+    for org_id in org_ids:
+        try:
+            result = replicate_workspace_relationships_for_tenant(org_id)
+            results.append(result)
+        except Exception as e:
+            logger.exception(f"Failed to replicate workspace relationships for org_id {org_id}: {e}")
+            results.append(
+                {
+                    "org_id": org_id,
+                    "status": "error",
+                    "error": str(e),
+                    "workspaces_replicated": 0,
+                }
+            )
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+    error_count = sum(1 for r in results if r["status"] == "error")
+    total_workspaces = sum(r["workspaces_replicated"] for r in results)
+
+    return JsonResponse(
+        {
+            "message": f"Completed workspace relationship replication for {len(org_ids)} org_ids.",
+            "summary": {
+                "total_tenants": len(org_ids),
+                "success": success_count,
+                "errors": error_count,
+                "total_workspaces_replicated": total_workspaces,
+            },
+            "results": results,
+        },
+        status=200,
     )

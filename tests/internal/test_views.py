@@ -3395,6 +3395,62 @@ class InternalS2SViewsetTests(IdentityRequest):
         self.assertEqual(ungrouped_hosts_data["name"], Workspace.SpecialNames.UNGROUPED_HOSTS)
 
 
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
+    def test_replicate_workspace_relationships(self, replicate):
+        """Test that we can replicate workspace relationships."""
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        replicate.side_effect = replicator.replicate
+        fixture = RbacFixture(V2TenantBootstrapService(replicator))
+
+        tenant = fixture.new_tenant(org_id="12345")
+        
+        # Get the workspaces
+        root = Workspace.objects.get(tenant=tenant, type=Workspace.Types.ROOT)
+        default = Workspace.objects.get(tenant=tenant, type=Workspace.Types.DEFAULT)
+        
+        # Create an ungrouped workspace
+        ungrouped = Workspace.objects.create(
+            tenant=tenant,
+            type=Workspace.Types.UNGROUPED_HOSTS,
+            name=Workspace.SpecialNames.UNGROUPED_HOSTS,
+            parent=default,
+        )
+        
+        # Create a standard workspace
+        standard = Workspace.objects.create(
+            tenant=tenant,
+            type=Workspace.Types.STANDARD,
+            name="Test Workspace",
+            parent=default,
+        )
+
+        tuples.clear()
+
+        payload = {"org_ids": [tenant.org_id]}
+        response = self.client.post(
+            f"/_private/api/utils/replicate_workspace_relationships/",
+            data=payload,
+            **self.internal_request.META,
+            content_type="application/json",
+        )
+        
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        response_data = response.json()
+        
+        # Verify results
+        self.assertEqual(len(response_data["results"]), 1)
+        result = response_data["results"][0]
+        self.assertEqual(result["org_id"], "12345")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["workspaces_replicated"], 2)
+        
+        # Should have relationships for ungrouped->default, standard->default (but NOT default->root)
+        self.assertNotIn(str(default.id), result["workspace_ids"])
+        self.assertIn(str(ungrouped.id), result["workspace_ids"])
+        self.assertIn(str(standard.id), result["workspace_ids"])
+
+
 def valid_destructive_time():
     return datetime.now(timezone.utc).replace(tzinfo=pytz.UTC) + timedelta(hours=1)
 

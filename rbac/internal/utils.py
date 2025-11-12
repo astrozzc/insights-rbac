@@ -23,6 +23,7 @@ import uuid
 import jsonschema
 from django.conf import settings
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from django.urls import resolve
 from internal.schemas import INVENTORY_INPUT_SCHEMAS, RELATION_INPUT_SCHEMAS
 from jsonschema import validate
@@ -31,8 +32,9 @@ from management.relation_replicator.logging_replicator import stringify_spicedb_
 from management.relation_replicator.outbox_replicator import OutboxReplicator
 from management.relation_replicator.relation_replicator import PartitionKey, ReplicationEvent, ReplicationEventType
 from management.workspace.relation_api_dual_write_workspace_handler import RelationApiDualWriteWorkspaceHandler
+from migration_tool.utils import create_relationship
 
-from api.models import User
+from api.models import Tenant, User
 
 
 logger = logging.getLogger(__name__)
@@ -200,3 +202,121 @@ def is_str_valid_uuid(uuid_str: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+@transaction.atomic
+def replicate_workspace_relationships_for_tenant(org_id: str) -> dict:
+    """
+    Replicate workspace relationships for a single tenant.
+
+    This replicates parent relationships for ungrouped-hosts and standard workspaces.
+    Root and default workspace relationships are handled by tenant bootstrap.
+
+    Locking strategy:
+    - Locks all workspaces being replicated to prevent concurrent parent updates
+    - Ensures the parent relationship cannot change between read and replication
+    - Prevents race condition where dual write updates parent while we're replicating old parent
+
+    Args:
+        org_id (str): The organization ID of the tenant.
+
+    Returns:
+        dict: A dictionary with status and details about the replication:
+            - org_id (str): The organization ID
+            - status (str): "success" or "error"
+            - message (str): Description of the result
+            - workspaces_replicated (int): Number of workspace relationships replicated
+            - workspace_ids (list): List of workspace UUIDs that had relationships replicated
+    """
+    tenant = get_object_or_404(Tenant, org_id=org_id)
+    logger.info(f"Replicating workspace relationships for tenant: {org_id}")
+
+    # First, get workspace IDs to lock (without select_related to avoid locking parents prematurely)
+    workspace_ids_to_lock = list(
+        Workspace.objects.filter(tenant=tenant)
+        .exclude(type__in=[Workspace.Types.ROOT, Workspace.Types.DEFAULT])
+        .values_list("id", flat=True)
+    )
+
+    if not workspace_ids_to_lock:
+        logger.info(f"No ungrouped or standard workspaces found for tenant {org_id}")
+        return {
+            "org_id": org_id,
+            "status": "success",
+            "message": "No ungrouped or standard workspaces found",
+            "workspaces_replicated": 0,
+        }
+
+    # Lock workspaces to prevent concurrent updates
+    # This prevents race condition where parent changes between read and replication
+    workspaces = (
+        Workspace.objects.select_for_update()
+        .filter(id__in=workspace_ids_to_lock)
+        .select_related("parent")
+    )
+
+    # Collect all unique parent IDs and lock them in one query
+    # This is more efficient than locking each parent individually (especially if many share same parent)
+    parent_ids = set()
+    workspaces_list = list(workspaces)  # Evaluate queryset once
+    
+    for workspace in workspaces_list:
+        if workspace.parent_id is not None:
+            parent_ids.add(workspace.parent_id)
+    
+    if parent_ids:
+        # Lock all unique parent workspaces in a single query
+        Workspace.objects.select_for_update().filter(id__in=parent_ids).exists()
+
+    relationships = []
+    workspace_ids = []
+
+    for workspace in workspaces_list:
+        if workspace.parent is None:
+            logger.warning(f"Workspace {workspace.id} has no parent, skipping. Type: {workspace.type}")
+            continue
+
+        # Parent is already locked (from the batch lock above)
+        # Create relationship tuple for this workspace
+        relationship = create_relationship(
+            ("rbac", "workspace"),
+            str(workspace.id),
+            ("rbac", "workspace"),
+            str(workspace.parent.id),
+            "parent",
+        )
+        relationships.append(relationship)
+        workspace_ids.append(str(workspace.id))
+
+    if not relationships:
+        logger.info(f"No workspace relationships to replicate for tenant {org_id}")
+        return {
+            "org_id": org_id,
+            "status": "success",
+            "message": "No workspace relationships to replicate",
+            "workspaces_replicated": 0,
+        }
+
+    # Replicate all relationships in one batch
+    replicator = OutboxReplicator()
+    replicator.replicate(
+        ReplicationEvent(
+            event_type=ReplicationEventType.WORKSPACE_IMPORT,
+            info={"org_id": org_id, "workspace_count": len(relationships)},
+            partition_key=PartitionKey.byEnvironment(),
+            add=relationships,
+        )
+    )
+
+    logger.info(
+        f"Successfully replicated {len(relationships)} workspace relationships for tenant {org_id}. "
+        f"Workspace IDs: {workspace_ids}"
+    )
+
+    return {
+        "org_id": org_id,
+        "status": "success",
+        "message": f"Replicated {len(relationships)} workspace relationships",
+        "workspaces_replicated": len(relationships),
+        "workspace_ids": workspace_ids,
+    }
