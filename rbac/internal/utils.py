@@ -25,8 +25,10 @@ import jsonschema
 from django.conf import settings
 from django.db import transaction
 from django.urls import resolve
+from google.protobuf import json_format
 from internal.schemas import INVENTORY_INPUT_SCHEMAS, RELATION_INPUT_SCHEMAS
 from jsonschema import validate
+from kessel.relations.v1beta1 import common_pb2, relation_tuples_pb2
 from management.models import BindingMapping, Role, Workspace
 from management.relation_replicator.logging_replicator import stringify_spicedb_relationship
 from management.relation_replicator.outbox_replicator import OutboxReplicator
@@ -457,3 +459,326 @@ def is_str_valid_uuid(uuid_str: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+# ============================================================================
+# Helper functions for Kessel relationship cleanup
+# ============================================================================
+
+
+def response_to_relationship(r):
+    """Convert a gRPC response tuple to a Relationship protobuf."""
+    return common_pb2.Relationship(
+        resource=common_pb2.ObjectReference(
+            type=common_pb2.ObjectType(
+                namespace=r.resource.type.namespace,
+                name=r.resource.type.name,
+            ),
+            id=r.resource.id,
+        ),
+        relation=r.relation,
+        subject=common_pb2.SubjectReference(
+            subject=common_pb2.ObjectReference(
+                type=common_pb2.ObjectType(
+                    namespace=r.subject.subject.type.namespace,
+                    name=r.subject.subject.type.name,
+                ),
+                id=r.subject.subject.id,
+            ),
+            relation=r.subject.relation if r.subject.relation else "",
+        ),
+    )
+
+
+def find_group_member_relations(stub, group_uuid: str, metadata: list) -> list:
+    """Find member relations for a group."""
+    member_filter = relation_tuples_pb2.RelationTupleFilter(
+        resource_namespace="rbac",
+        resource_type="group",
+        resource_id=str(group_uuid),
+        relation="member",
+    )
+    request = relation_tuples_pb2.ReadTuplesRequest(filter=member_filter)
+    return list(stub.ReadTuples(request, metadata=metadata))
+
+
+def find_group_subject_relations(stub, group_uuid: str, metadata: list) -> list:
+    """Find subject relations where group is subject."""
+    subject_filter = relation_tuples_pb2.RelationTupleFilter(
+        subject_filter=relation_tuples_pb2.SubjectFilter(
+            subject_namespace="rbac",
+            subject_type="group",
+            subject_id=str(group_uuid),
+        )
+    )
+    request = relation_tuples_pb2.ReadTuplesRequest(filter=subject_filter)
+    return list(stub.ReadTuples(request, metadata=metadata))
+
+
+def find_role_binding_role_relations(stub, role_uuid: str, metadata: list) -> list:
+    """Find role relations for a role."""
+    role_filter = relation_tuples_pb2.RelationTupleFilter(
+        relation="role",
+        subject_filter=relation_tuples_pb2.SubjectFilter(
+            subject_namespace="rbac",
+            subject_type="role",
+            subject_id=str(role_uuid),
+        ),
+    )
+    request = relation_tuples_pb2.ReadTuplesRequest(filter=role_filter)
+    return list(stub.ReadTuples(request, metadata=metadata))
+
+
+def find_role_binding_binding_relations(stub, role_binding_uuid: str, metadata: list) -> list:
+    """Find binding relations for a role_binding."""
+    binding_filter = relation_tuples_pb2.RelationTupleFilter(
+        relation="binding",
+        subject_filter=relation_tuples_pb2.SubjectFilter(
+            subject_namespace="rbac",
+            subject_type="role_binding",
+            subject_id=str(role_binding_uuid),
+        ),
+    )
+    request = relation_tuples_pb2.ReadTuplesRequest(filter=binding_filter)
+    return list(stub.ReadTuples(request, metadata=metadata))
+
+
+def find_role_binding_subject_relations(stub, role_binding_uuid: str, metadata: list) -> list:
+    """Find subject relations for a role_binding."""
+    subject_filter = relation_tuples_pb2.RelationTupleFilter(
+        resource_namespace="rbac",
+        resource_type="role_binding",
+        resource_id=str(role_binding_uuid),
+        relation="subject",
+    )
+    request = relation_tuples_pb2.ReadTuplesRequest(filter=subject_filter)
+    return list(stub.ReadTuples(request, metadata=metadata))
+
+
+def find_role_binding_all_relations(stub, role_binding_uuid: str, metadata: list) -> list:
+    """Find all relations for a role_binding (role, binding, subject)."""
+    relations = []
+
+    # Role relation: rbac/role_binding:{uuid} #role rbac/role:{uuid}
+    role_filter = relation_tuples_pb2.RelationTupleFilter(
+        resource_namespace="rbac",
+        resource_type="role_binding",
+        resource_id=str(role_binding_uuid),
+        relation="role",
+    )
+    role_request = relation_tuples_pb2.ReadTuplesRequest(filter=role_filter)
+    relations.extend(stub.ReadTuples(role_request, metadata=metadata))
+
+    # Binding relation: rbac/workspace:{id} #binding rbac/role_binding:{uuid}
+    relations.extend(find_role_binding_binding_relations(stub, role_binding_uuid, metadata))
+
+    # Subject relations: rbac/role_binding:{uuid} #subject rbac/group:{uuid}
+    relations.extend(find_role_binding_subject_relations(stub, role_binding_uuid, metadata))
+
+    return relations
+
+
+def cleanup_orphaned_role_bindings(stub, role_binding_uuids: set, metadata: list) -> list:
+    """Find all relationships for orphaned role_bindings to remove."""
+    relationships_to_remove = []
+
+    for rb_uuid in role_binding_uuids:
+        # Get binding relations
+        for rel in find_role_binding_binding_relations(stub, rb_uuid, metadata):
+            relationships_to_remove.append(response_to_relationship(rel))
+
+        # Get subject relations
+        for rel in find_role_binding_subject_relations(stub, rb_uuid, metadata):
+            relationships_to_remove.append(response_to_relationship(rel))
+
+        logger.info(f"Added binding and subject relationships for orphaned role_binding {rb_uuid}")
+
+    return relationships_to_remove
+
+
+def cleanup_orphaned_role(stub, role_uuid: str, metadata: list) -> tuple:
+    """Find all relationships for an orphaned role to remove.
+
+    Returns: (role_binding_relations, relationships_to_remove, orphaned_role_binding_uuids)
+    """
+    role_binding_relations = []
+    relationships_to_remove = []
+    orphaned_role_bindings = set()
+
+    # Find role_bindings that reference this role
+    for r in find_role_binding_role_relations(stub, role_uuid, metadata):
+        role_binding_relations.append(json_format.MessageToDict(r))
+        orphaned_role_bindings.add(r.resource.id)
+        relationships_to_remove.append(response_to_relationship(r))
+
+    # For each orphaned role_binding, clean up all its relationships
+    if orphaned_role_bindings:
+        relationships_to_remove.extend(cleanup_orphaned_role_bindings(stub, orphaned_role_bindings, metadata))
+
+    return role_binding_relations, relationships_to_remove, list(orphaned_role_bindings)
+
+
+def resolve_role_info(role_uuid: str | None, role_name: str | None) -> dict:
+    """Resolve role information from uuid or name.
+
+    Returns dict with: role_uuid, role_exists, role_is_system, error (if any)
+    """
+    result = {"role_uuid": role_uuid, "role_exists": False, "role_is_system": False, "error": None}
+
+    # Try to resolve from role_name first
+    if role_name and not role_uuid:
+        try:
+            role = Role.objects.get(name=role_name)
+            result["role_uuid"] = str(role.uuid)
+            result["role_exists"] = True
+            result["role_is_system"] = role.system
+            return result
+        except Role.DoesNotExist:
+            logger.info(f"Role '{role_name}' not found in database")
+            return result
+        except Role.MultipleObjectsReturned:
+            result["error"] = f"Multiple roles found with name '{role_name}'. Please provide role_uuid instead."
+            return result
+
+    # Resolve from role_uuid
+    if role_uuid:
+        try:
+            role = Role.objects.get(uuid=role_uuid)
+            result["role_exists"] = True
+            result["role_is_system"] = role.system
+        except Role.DoesNotExist:
+            pass
+
+    return result
+
+
+def cleanup_orphaned_group_scenario(stub, metadata, group_uuid, replicate_removal, result, relationships_to_remove):
+    """Handle orphaned group cleanup (group deleted but Kessel relationships remain)."""
+    orphaned_role_bindings = set()
+
+    # Find group's member relations (group -> principals)
+    member_relations = find_group_member_relations(stub, group_uuid, metadata)
+    for r in member_relations:
+        result["relations_found"].append(json_format.MessageToDict(r))
+        if replicate_removal:
+            relationships_to_remove.append(response_to_relationship(r))
+
+    # Find group's subject relations (role_binding -> group)
+    subject_relations = find_group_subject_relations(stub, group_uuid, metadata)
+    for r in subject_relations:
+        result["relations_found"].append(json_format.MessageToDict(r))
+        rb_uuid = r.resource.id
+
+        # Check if the role_binding also needs cleanup
+        if not BindingMapping.objects.filter(mappings__id=rb_uuid).exists():
+            orphaned_role_bindings.add(rb_uuid)
+
+        if replicate_removal:
+            relationships_to_remove.append(response_to_relationship(r))
+
+    # Clean up orphaned role_bindings (binding + role relations)
+    if replicate_removal and orphaned_role_bindings:
+        relationships_to_remove.extend(cleanup_orphaned_role_bindings(stub, orphaned_role_bindings, metadata))
+
+    return orphaned_role_bindings
+
+
+def cleanup_orphaned_role_scenario(stub, metadata, role_uuid, replicate_removal, result, relationships_to_remove):
+    """Handle orphaned role cleanup (role deleted but Kessel relationships remain)."""
+    role_binding_rels, role_rels_to_remove, orphaned_rbs = cleanup_orphaned_role(stub, role_uuid, metadata)
+
+    result["relations_found"].extend(role_binding_rels)
+    result["orphaned_roles_cleaned"].append(role_uuid)
+
+    if replicate_removal:
+        relationships_to_remove.extend(role_rels_to_remove)
+
+    return set(orphaned_rbs)
+
+
+def cleanup_group_role_assignment_scenario(
+    stub,
+    metadata,
+    group_uuid,
+    role_uuid,
+    role_name,
+    role_exists,
+    role_is_system,
+    group_exists,
+    replicate_removal,
+    result,
+    relationships_to_remove,
+):
+    """Handle orphaned group-role assignment cleanup.
+
+    This handles the case where a role was unassigned from a group but the Kessel
+    relationship remains. For system roles, we only remove the subject relation
+    since system roles have thousands of bindings.
+    """
+    orphaned_role_bindings = set()
+
+    # Find all role_bindings where this group is a subject
+    subject_relations = find_group_subject_relations(stub, group_uuid, metadata)
+
+    for r in subject_relations:
+        rb_uuid = r.resource.id
+        result["relations_found"].append(json_format.MessageToDict(r))
+
+        # Find which role this binding is for
+        role_relations = list(
+            stub.ReadTuples(
+                relation_tuples_pb2.ReadTuplesRequest(
+                    filter=relation_tuples_pb2.RelationTupleFilter(
+                        resource_namespace="rbac",
+                        resource_type="role_binding",
+                        resource_id=rb_uuid,
+                        relation="role",
+                    )
+                ),
+                metadata=metadata,
+            )
+        )
+
+        for role_rel in role_relations:
+            bound_role_uuid = role_rel.subject.subject.id
+
+            # Skip if looking for a specific role and this isn't it
+            if role_uuid and bound_role_uuid != role_uuid:
+                continue
+
+            # Handle case: searching by role_name for a non-existent role
+            if role_name and not role_uuid:
+                if not Role.objects.filter(uuid=bound_role_uuid).exists():
+                    logger.info(f"Found role_binding {rb_uuid} to non-existent role {bound_role_uuid}")
+                    orphaned_role_bindings.add(rb_uuid)
+
+                    if replicate_removal:
+                        relationships_to_remove.append(response_to_relationship(r))
+                        # Also clean up the orphaned role's relationships
+                        _, role_rels, _ = cleanup_orphaned_role(stub, bound_role_uuid, metadata)
+                        relationships_to_remove.extend(role_rels)
+                        result["orphaned_roles_cleaned"].append(bound_role_uuid)
+                continue
+
+            # Handle case: specific role found - remove the subject relation
+            if replicate_removal:
+                relationships_to_remove.append(response_to_relationship(r))
+
+            # If the role doesn't exist AND is not a system role, clean up its bindings
+            # System roles have thousands of bindings, so we skip searching them
+            if not role_exists and not role_is_system:
+                orphaned_role_bindings.add(rb_uuid)
+                _, role_rels, _ = cleanup_orphaned_role(stub, role_uuid, metadata)
+                relationships_to_remove.extend(role_rels)
+                if role_uuid not in result["orphaned_roles_cleaned"]:
+                    result["orphaned_roles_cleaned"].append(role_uuid)
+
+    # If group doesn't exist, also clean up its member relations
+    if not group_exists:
+        member_relations = find_group_member_relations(stub, group_uuid, metadata)
+        for r in member_relations:
+            result["relations_found"].append(json_format.MessageToDict(r))
+            if replicate_removal:
+                relationships_to_remove.append(response_to_relationship(r))
+
+    return orphaned_role_bindings

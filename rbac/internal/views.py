@@ -37,9 +37,13 @@ from grpc import RpcError
 from internal.errors import SentryDiagnosticError, UserNotFoundError
 from internal.jwt_utils import JWTManager, JWTProvider
 from internal.utils import (
+    cleanup_group_role_assignment_scenario,
+    cleanup_orphaned_group_scenario,
+    cleanup_orphaned_role_scenario,
     delete_bindings,
     get_or_create_ungrouped_workspace,
     load_request_body,
+    resolve_role_info,
     validate_inventory_input,
     validate_relations_input,
 )
@@ -74,6 +78,7 @@ from management.principal.proxy import (
 )
 from management.relation_replicator.outbox_replicator import OutboxReplicator
 from management.relation_replicator.relation_replicator import PartitionKey, ReplicationEvent, ReplicationEventType
+from management.relation_replicator.relations_api_replicator import RelationsApiReplicator
 from management.role.definer import delete_permission
 from management.role.model import Access
 from management.role.relation_api_dual_write_handler import (
@@ -2316,3 +2321,161 @@ def fix_missing_binding_base_tuples(request):
         },
         status=202,
     )
+
+
+@require_http_methods(["POST"])
+def cleanup_orphaned_kessel_relationships(request):
+    """Unified endpoint to clean up orphaned Kessel relationships.
+
+    POST /_private/api/utils/cleanup_orphaned_kessel_relationships/
+
+    This endpoint handles three scenarios:
+    1. Orphaned group - group deleted but Kessel relationships remain
+    2. Orphaned role - role deleted but Kessel relationships remain
+    3. Orphaned group-role assignment - role unassigned from group but relationship remains
+
+    Request body:
+        {
+            "group_uuid": "uuid-string",       // optional
+            "role_uuid": "uuid-string",        // optional - if not provided, will search by role_name
+            "role_name": "role-name",          // optional - used if role_uuid not provided
+            "replicate_removal": false         // optional, defaults to false (dry run)
+        }
+
+    Scenarios:
+    - group_uuid only: Clean up orphaned group (must not exist in DB)
+    - role_uuid only: Clean up orphaned role (must not exist in DB)
+    - group_uuid + role_uuid/role_name: Clean up orphaned group-role assignment
+      - For system roles: only removes subject relation (group assignment)
+      - For custom roles that don't exist: also cleans up role's bindings
+
+    Returns detailed information about what was found and optionally removed.
+    """
+    req_data = load_request_body(request)
+
+    group_uuid = req_data.get("group_uuid")
+    role_uuid = req_data.get("role_uuid")
+    role_name = req_data.get("role_name")
+    replicate_removal = req_data.get("replicate_removal", False)
+
+    # Validate input
+    if not group_uuid and not role_uuid and not role_name:
+        return JsonResponse(
+            {"detail": "At least one of group_uuid, role_uuid, or role_name is required"},
+            status=400,
+        )
+
+    try:
+        # Initialize result
+        result = {
+            "group_uuid": group_uuid,
+            "role_uuid": role_uuid,
+            "role_name": role_name,
+            "group_exists": None,
+            "role_exists": None,
+            "role_is_system": None,
+            "relations_found": [],
+            "orphaned_role_bindings": [],
+            "orphaned_roles_cleaned": [],
+            "total_relations_found": 0,
+            "total_to_remove": 0,
+            "replicated": False,
+        }
+
+        relationships_to_remove = []
+        orphaned_role_bindings = set()
+
+        # Resolve group existence
+        group_exists = Group.objects.filter(uuid=group_uuid).exists() if group_uuid else False
+        result["group_exists"] = group_exists if group_uuid else None
+
+        # Resolve role information
+        role_info = resolve_role_info(role_uuid, role_name)
+        if role_info["error"]:
+            return JsonResponse({"detail": role_info["error"]}, status=400)
+
+        role_uuid = role_info["role_uuid"]
+        role_exists = role_info["role_exists"]
+        role_is_system = role_info["role_is_system"]
+
+        if role_uuid:
+            result["role_uuid"] = role_uuid
+            result["role_exists"] = role_exists
+            result["role_is_system"] = role_is_system
+
+        # Connect to Kessel
+        token = jwt_manager.get_jwt_from_redis()
+        metadata = [("authorization", f"Bearer {token}")] if token else []
+
+        with create_client_channel(settings.RELATION_API_SERVER) as channel:
+            stub = relation_tuples_pb2_grpc.KesselTupleServiceStub(channel)
+
+            # Scenario 1: Group only (orphaned group cleanup)
+            if group_uuid and not role_uuid and not role_name:
+                if group_exists:
+                    return JsonResponse(
+                        {
+                            "detail": f"Group {group_uuid} still exists. Use normal deletion flow.",
+                            "group_exists": True,
+                        },
+                        status=400,
+                    )
+                orphaned_role_bindings = cleanup_orphaned_group_scenario(
+                    stub, metadata, group_uuid, replicate_removal, result, relationships_to_remove
+                )
+
+            # Scenario 2: Role only (orphaned role cleanup)
+            elif role_uuid and not group_uuid:
+                if role_exists:
+                    return JsonResponse(
+                        {"detail": f"Role {role_uuid} still exists. Use normal deletion flow.", "role_exists": True},
+                        status=400,
+                    )
+                orphaned_role_bindings = cleanup_orphaned_role_scenario(
+                    stub, metadata, role_uuid, replicate_removal, result, relationships_to_remove
+                )
+
+            # Scenario 3: Group + Role (orphaned assignment cleanup)
+            elif group_uuid and (role_uuid or role_name):
+                orphaned_role_bindings = cleanup_group_role_assignment_scenario(
+                    stub,
+                    metadata,
+                    group_uuid,
+                    role_uuid,
+                    role_name,
+                    role_exists,
+                    role_is_system,
+                    group_exists,
+                    replicate_removal,
+                    result,
+                    relationships_to_remove,
+                )
+
+        # Finalize result
+        result["orphaned_role_bindings"] = list(orphaned_role_bindings)
+        result["total_relations_found"] = len(result["relations_found"])
+        result["total_to_remove"] = len(relationships_to_remove)
+
+        # Replicate removal if requested
+        if replicate_removal and relationships_to_remove:
+            logger.info(f"Replicating removal of {len(relationships_to_remove)} relationships")
+            replicator = RelationsApiReplicator()
+            try:
+                replicator.delete_relationships(relationships_to_remove)
+                result["replicated"] = True
+                logger.info(f"Successfully removed {len(relationships_to_remove)} relationships")
+            except Exception as e:
+                logger.error(f"Error replicating removal: {e}")
+                result["error"] = str(e)
+                return JsonResponse(result, status=500)
+
+        return JsonResponse(result, status=200)
+
+    except RpcError as e:
+        logger.error(f"gRPC error in cleanup_orphaned_kessel_relationships: {str(e)}")
+        return JsonResponse({"detail": "Error occurred in gRPC call", "error": str(e)}, status=400)
+    except Exception as e:
+        logger.error(f"Unexpected error in cleanup_orphaned_kessel_relationships: {str(e)}")
+        return JsonResponse(
+            {"detail": "Error occurred in cleanup_orphaned_kessel_relationships", "error": str(e)}, status=500
+        )
