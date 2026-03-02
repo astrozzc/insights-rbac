@@ -682,6 +682,10 @@ class RoleBindingService:
         if resource_type == "workspace":
             if not Workspace.objects.exists_for_tenant(resource_id, tenant=self.tenant):
                 raise NotFoundError(resource_type, resource_id)
+        elif resource_type == "tenant":
+            expected_id = self.tenant.tenant_resource_id()
+            if not expected_id or resource_id != expected_id:
+                raise NotFoundError(resource_type, resource_id)
         else:
             raise InvalidFieldError("resource_type", f"Unsupported resource type: '{resource_type}'")
 

@@ -29,7 +29,7 @@ from management.role.v2_serializer import RoleIdSerializer
 from management.role_binding.model import RoleBinding
 from management.role_binding.service import RoleBindingService
 from management.subject import SubjectType
-from management.utils import FieldSelection, FieldSelectionValidationError
+from management.utils import FieldSelection, FieldSelectionValidationError, normalize_tenant_resource_id
 from rest_framework import serializers
 
 _SUBJECT_TYPE_GROUP = "group"
@@ -145,6 +145,15 @@ class RoleBindingInputSerializer(serializers.Serializer):
     def validate_order_by(self, value):
         """Return None for empty values."""
         return value or None
+
+    def validate(self, attrs):
+        """Normalize resource_id for tenant: convert org_id to {domain}/{org_id}."""
+        attrs = super().validate(attrs)
+        resource_type = (attrs.get("resource_type") or "").strip().lower()
+        resource_id = attrs.get("resource_id")
+        if resource_type and resource_id:
+            attrs["resource_id"] = normalize_tenant_resource_id(resource_type, resource_id)
+        return attrs
 
 
 class RoleBindingOutputSerializer(serializers.Serializer):
@@ -680,6 +689,15 @@ class UpdateRoleBindingRequestSerializer(RoleBindingInputSerializerMixin, serial
             supported = ", ".join(SubjectType.values())
             raise serializers.ValidationError(f"Unsupported subject type: '{value}'. Supported types: {supported}")
         return value
+
+    def validate(self, attrs):
+        """Normalize resource_id for tenant: convert org_id to {domain}/{org_id}."""
+        attrs = super().validate(attrs)
+        resource_type = (attrs.get("resource_type") or "").strip().lower()
+        resource_id = attrs.get("resource_id")
+        if resource_type and resource_id:
+            attrs["resource_id"] = normalize_tenant_resource_id(resource_type, resource_id)
+        return attrs
 
     def save(self):
         """Execute the update via the service layer and return the result.

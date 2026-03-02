@@ -116,6 +116,30 @@ def create_client_channel_relation(addr):
         yield secure_channel
 
 
+def normalize_tenant_resource_id(resource_type: str, resource_id: str) -> str:
+    """Convert org_id to full tenant_resource_id when resource_type is tenant.
+
+    When resource_type is 'tenant', the API expects resource_id in the format
+    {PRINCIPAL_USER_DOMAIN}/{org_id}. If the client passes just org_id, this
+    converts it automatically.
+
+    Args:
+        resource_type: The type of resource (e.g., 'tenant', 'workspace')
+        resource_id: The resource identifier (org_id for tenant, UUID for workspace)
+
+    Returns:
+        The resource_id, converted to tenant format when applicable
+    """
+    if not resource_type or not resource_id:
+        return resource_id
+    if resource_type.lower() != "tenant":
+        return resource_id
+    # Already in domain/org_id format
+    if "/" in resource_id:
+        return resource_id
+    return Tenant.org_id_to_tenant_resource_id(resource_id)
+
+
 def validate_psk(psk, client_id):
     """Validate the PSK for the client."""
     psks = settings.SERVICE_PSKS

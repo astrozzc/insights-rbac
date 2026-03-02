@@ -20,6 +20,7 @@
 import logging
 
 from feature_flags import FEATURE_FLAGS
+from management.utils import normalize_tenant_resource_id
 from management.permissions.workspace_inventory_access import (
     WorkspaceInventoryAccessChecker,
 )
@@ -95,7 +96,7 @@ class RoleBindingKesselAccessPermission(permissions.BasePermission):
     VIEW_RELATION = "view"
 
     # Allowlist of valid resource types for role binding access checks
-    ALLOWED_RESOURCE_TYPES = {"workspace"}
+    ALLOWED_RESOURCE_TYPES = {"workspace", "tenant"}
 
     def _get_relation(self) -> str:
         """Get the relation to check based on feature flag."""
@@ -121,6 +122,9 @@ class RoleBindingKesselAccessPermission(permissions.BasePermission):
         # If no resource_id or resource_type provided, let view validation handle it
         if not resource_id or not resource_type:
             return True
+
+        # Normalize tenant resource_id: convert org_id to {domain}/{org_id}
+        resource_id = normalize_tenant_resource_id(resource_type, resource_id)
 
         # Validate resource_type against allowlist and fail closed on unknown types
         if resource_type not in self.ALLOWED_RESOURCE_TYPES:

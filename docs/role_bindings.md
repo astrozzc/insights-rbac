@@ -274,10 +274,12 @@ Role bindings are attached to resources at different scope levels. Permissions *
 ### Scope Levels
 
 ```
-Scope.TENANT    → resource_type: "tenant",    resource_id: org_id (e.g., "o_12345")
+Scope.TENANT    → resource_type: "tenant",    resource_id: {domain}/{org_id} (e.g., "redhat/o_12345")
 Scope.ROOT      → resource_type: "workspace", resource_id: root workspace UUID
 Scope.DEFAULT   → resource_type: "workspace", resource_id: default workspace UUID
 ```
+
+For tenant resources, you may pass either `org_id` or the full `{PRINCIPAL_USER_DOMAIN}/{org_id}` format; the API automatically converts plain `org_id` to the full format.
 
 ### Hierarchy Diagram
 

@@ -493,6 +493,39 @@ class RoleBindingKesselPermissionTests(RoleBindingAccessTestMixin, TransactionId
         mock_get_principal_id.assert_not_called()
         mock_checker_class.assert_not_called()
 
+    @override_settings(PRINCIPAL_USER_DOMAIN="redhat")
+    @patch("management.permissions.role_binding_access.get_kessel_principal_id")
+    @patch("management.permissions.role_binding_access.WorkspaceInventoryAccessChecker")
+    def test_kessel_permission_converts_tenant_org_id_to_full_resource_id(
+        self, mock_checker_class, mock_get_principal_id
+    ):
+        """Kessel permission should convert org_id to {domain}/{org_id} for tenant resource type."""
+        permission = RoleBindingKesselAccessPermission()
+
+        mock_get_principal_id.return_value = "localhost/test-user-123"
+
+        mock_checker = MagicMock()
+        mock_checker.check_resource_access.return_value = True
+        mock_checker_class.return_value = mock_checker
+
+        mock_request = Mock()
+        mock_request.user.system = False
+        mock_request.user.admin = False
+        mock_request.query_params = {
+            "resource_id": self.tenant.org_id,
+            "resource_type": "tenant",
+        }
+
+        mock_view = Mock()
+
+        result = permission.has_permission(mock_request, mock_view)
+
+        self.assertTrue(result)
+        mock_checker.check_resource_access.assert_called_once()
+        call_kwargs = mock_checker.check_resource_access.call_args[1]
+        self.assertEqual(call_kwargs["resource_type"], "tenant")
+        self.assertEqual(call_kwargs["resource_id"], f"redhat/{self.tenant.org_id}")
+
     @patch("management.permissions.role_binding_access.get_kessel_principal_id")
     @patch("management.permissions.role_binding_access.WorkspaceInventoryAccessChecker")
     def test_kessel_permission_normalizes_resource_type_to_lowercase(self, mock_checker_class, mock_get_principal_id):

@@ -33,6 +33,7 @@ from management.utils import (
     is_valid_uuid,
     value_to_list,
     build_system_user_from_token,
+    normalize_tenant_resource_id,
 )
 from management.authorization.token_validator import ITSSOTokenValidator
 from tests.identity_request import IdentityRequest
@@ -123,6 +124,24 @@ class UtilsTests(IdentityRequest):
         from management.utils import PRINCIPAL_CACHE
 
         PRINCIPAL_CACHE.delete_all_principals_for_tenant(self.tenant.org_id)
+
+    def test_normalize_tenant_resource_id_converts_org_id(self):
+        """normalize_tenant_resource_id converts org_id to {domain}/{org_id} for tenant type."""
+        org_id = self.tenant.org_id
+        result = normalize_tenant_resource_id("tenant", org_id)
+        self.assertEqual(result, f"redhat/{org_id}")
+
+    def test_normalize_tenant_resource_id_preserves_full_format(self):
+        """normalize_tenant_resource_id leaves resource_id unchanged when already in domain/org_id format."""
+        full_id = f"redhat/{self.tenant.org_id}"
+        result = normalize_tenant_resource_id("tenant", full_id)
+        self.assertEqual(result, full_id)
+
+    def test_normalize_tenant_resource_id_unchanged_for_workspace(self):
+        """normalize_tenant_resource_id does not modify resource_id for non-tenant types."""
+        ws_id = str(uuid.uuid4())
+        result = normalize_tenant_resource_id("workspace", ws_id)
+        self.assertEqual(result, ws_id)
 
     def test_access_for_principal(self):
         """Test that we get the correct access for a principal."""

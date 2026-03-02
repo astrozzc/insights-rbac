@@ -1058,6 +1058,19 @@ class UpdateRoleBindingsForSubjectTests(_ReplicationAssertionsMixin, IdentityReq
                     "workspace",
                     fake_workspace_id,
                 ),
+                # Tenant resource_id does not match current tenant
+                (
+                    "wrong_tenant",
+                    {
+                        "resource_type": "tenant",
+                        "resource_id": "redhat/other-org-id",
+                        "subject_type": "group",
+                        "subject_id": str(self.group.uuid),
+                        "role_ids": [str(self.role1.uuid)],
+                    },
+                    "tenant",
+                    "redhat/other-org-id",
+                ),
             ]
 
         for description, params, expected_resource_type, expected_resource_id in make_cases():

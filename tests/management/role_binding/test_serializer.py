@@ -26,6 +26,7 @@ from management.models import Group, Permission, Principal, RoleBinding, RoleBin
 from management.role_binding.serializer import (
     RoleBindingByGroupSerializer,
     RoleBindingFieldSelection,
+    RoleBindingInputSerializer,
     RoleBindingListInputSerializer,
     RoleBindingListOutputSerializer,
     UpdateRoleBindingRequestSerializer,
@@ -762,6 +763,46 @@ class RoleBindingListInputSerializerTest(TestCase):
         self.assertEqual(s.validated_data["order_by"], "-role.name")
 
 
+class RoleBindingInputSerializerTest(IdentityRequest):
+    """Test RoleBindingInputSerializer for by-subject endpoint (GET)."""
+
+    def test_tenant_resource_id_converts_org_id_to_full_format(self):
+        """When resource_type=tenant and resource_id is org_id, convert to {domain}/{org_id}."""
+        s = RoleBindingInputSerializer(
+            data={
+                "resource_id": self.tenant.org_id,
+                "resource_type": "tenant",
+            }
+        )
+        self.assertTrue(s.is_valid(), s.errors)
+        expected = f"redhat/{self.tenant.org_id}"
+        self.assertEqual(s.validated_data["resource_id"], expected)
+
+    def test_tenant_resource_id_preserves_full_format(self):
+        """When resource_type=tenant and resource_id already has domain prefix, leave as-is."""
+        full_id = f"redhat/{self.tenant.org_id}"
+        s = RoleBindingInputSerializer(
+            data={
+                "resource_id": full_id,
+                "resource_type": "tenant",
+            }
+        )
+        self.assertTrue(s.is_valid(), s.errors)
+        self.assertEqual(s.validated_data["resource_id"], full_id)
+
+    def test_workspace_resource_id_unchanged(self):
+        """When resource_type=workspace, resource_id is not converted."""
+        ws_id = str(uuid.uuid4())
+        s = RoleBindingInputSerializer(
+            data={
+                "resource_id": ws_id,
+                "resource_type": "workspace",
+            }
+        )
+        self.assertTrue(s.is_valid(), s.errors)
+        self.assertEqual(s.validated_data["resource_id"], ws_id)
+
+
 class RoleBindingListOutputSerializerTest(IdentityRequest):
     """Test the RoleBindingListOutputSerializer.
 
@@ -1071,6 +1112,18 @@ class UpdateRoleBindingRequestSerializerTests(IdentityRequest):
         serializer = UpdateRoleBindingRequestSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(len(serializer.validated_data["roles"]), 2)
+
+    def test_tenant_resource_id_converts_org_id_to_full_format(self):
+        """When resource_type=tenant and resource_id is org_id, convert to {domain}/{org_id}."""
+        data = self._make_valid_data(
+            resource_id=self.tenant.org_id,
+            resource_type="tenant",
+            subject_id="550e8400-e29b-41d4-a716-446655440000",
+        )
+        serializer = UpdateRoleBindingRequestSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        expected = f"redhat/{self.tenant.org_id}"
+        self.assertEqual(serializer.validated_data["resource_id"], expected)
 
     # ── Missing required fields (parameterized) ──────────────────────
 
