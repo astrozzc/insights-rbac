@@ -35,6 +35,10 @@ from django.views.decorators.http import require_http_methods
 from feature_flags import FEATURE_FLAGS
 from google.protobuf import json_format
 from grpc import RpcError
+from internal.custom_v2_role_tenant_migration import (
+    DEFAULT_CHUNK_SIZE,
+    replicate_custom_v2_role_owner_relationships,
+)
 from internal.errors import SentryDiagnosticError, UserNotFoundError
 from internal.jwt_utils import JWTManager, JWTProvider
 from internal.utils import (
@@ -532,20 +536,26 @@ def get_user_from_bop(username, email):
     user = users[0]
 
     if ("username" not in user) or (not user["username"]) or (user["username"].isspace()):
-        logger.error(f"""invalid data for user '{query_by}={principal}':
-            user found in bop but does not contain required 'username' field""")
+        logger.error(
+            f"""invalid data for user '{query_by}={principal}':
+            user found in bop but does not contain required 'username' field"""
+        )
         raise Exception(
             f"invalid user data for user '{query_by}={principal}': user found in bop but no username exists"
         )
 
     if "is_org_admin" not in user:
         user["is_org_admin"] = False
-        logger.warning(f"""invalid data for user '{query_by}={principal}':
-            user found in bop but does not contain required 'is_org_admin' field""")
+        logger.warning(
+            f"""invalid data for user '{query_by}={principal}':
+            user found in bop but does not contain required 'is_org_admin' field"""
+        )
 
     if "org_id" not in user:
-        logger.error(f"""invalid data for user '{query_by}={principal}':
-            user found in bop but does not contain required 'org_id' field""")
+        logger.error(
+            f"""invalid data for user '{query_by}={principal}':
+            user found in bop but does not contain required 'org_id' field"""
+        )
         raise Exception(f"invalid user data for user '{query_by}={principal}': user found in bop but no org_id exists")
 
     logger.debug(f"successfully queried bop for user: '{user}' with queryBy: '{query_by}'")
@@ -2578,3 +2588,49 @@ def remove_deleted_workspace_bindings(request):
     except Exception as e:
         logger.exception("Error removing bindings for deleted workspaces", exc_info=True)
         return JsonResponse({"detail": f"Error removing bindings for deleted workspaces: {str(e)}"}, status=500)
+
+
+@require_http_methods(["POST"])
+def migrate_custom_v2_roles_to_tenant(request):
+    """Replicate owner tuples for custom V2 roles from each role's tenant resource id.
+
+    POST /_private/api/utils/migrate_custom_v2_roles_to_tenant/
+
+    Iterates ``RoleV2`` with ``type=custom`` (with ``tenant`` loaded) and emits
+    ``rbac/role#owner@rbac/tenant`` for ``tenant.tenant_resource_id()``. Does not update role rows.
+
+    Query parameters:
+        dry_run: If ``true``, list roles that would get replication without calling the replicator.
+        org_id: If set, only roles whose ``tenant.org_id`` matches.
+        chunk_size: Optional number of rows per chunk (default ``500``; max ``5000``).
+
+    Returns:
+        JSON with ``replicated``, ``skipped``, counts, and ``dry_run``.
+    """
+    dry_run = request.GET.get("dry_run", "false").lower() == "true"
+    org_id = request.GET.get("org_id") or None
+    chunk_size = DEFAULT_CHUNK_SIZE
+    chunk_raw = request.GET.get("chunk_size")
+    if chunk_raw is not None:
+        try:
+            chunk_size = max(1, min(5000, int(chunk_raw)))
+        except ValueError:
+            return JsonResponse({"detail": "chunk_size must be a positive integer"}, status=400)
+
+    logger.info(
+        "migrate_custom_v2_roles_to_tenant: dry_run=%s org_id=%s chunk_size=%s",
+        dry_run,
+        org_id,
+        chunk_size,
+    )
+
+    try:
+        result = replicate_custom_v2_role_owner_relationships(
+            dry_run=dry_run,
+            org_id=org_id,
+            chunk_size=chunk_size,
+        )
+        return JsonResponse(result, status=200)
+    except Exception as e:
+        logger.exception("migrate_custom_v2_roles_to_tenant failed", exc_info=True)
+        return JsonResponse({"detail": str(e)}, status=500)
