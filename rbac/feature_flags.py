@@ -41,6 +41,8 @@ class FeatureFlags:
     TOGGLE_WORKSPACE_ACCESS_CHECK_V2 = "rbac.workspace-access-check-v2.enabled"
     # When enabled, use 'role_binding_view' permission; when disabled, use 'view' permission for role binding access.
     TOGGLE_USE_ROLE_BINDING_VIEW_PERMISSION = "rbac.use-role-binding-view-permission.enabled"
+    # When enabled, replace org_admin privilege checks with Kessel tenant-level permission checks.
+    TOGGLE_KESSEL_TENANT_PERMISSION_CHECK = "rbac.kessel-tenant-permission-check.enabled"
     # Per-org flag: when enabled, the org uses v2 APIs for write operations and v1 write APIs are blocked.
     TOGGLE_V2_EDIT_API_ENABLED = "platform.rbac.workspaces"
 
@@ -166,6 +168,18 @@ class FeatureFlags:
         return self.is_enabled(
             feature_name=self.TOGGLE_USE_ROLE_BINDING_VIEW_PERMISSION,
             fallback_function=lambda ignored_toggle_name, ignored_context: settings.USE_ROLE_BINDING_VIEW_PERMISSION,
+        )
+
+    def is_kessel_tenant_permission_check_enabled(self):
+        """Check whether tenant-level Kessel permission checks replace org_admin.
+
+        When enabled, permission classes check Kessel for tenant-level relations
+        (e.g. rbac_roles_read) instead of relying on the identity header's is_org_admin.
+        Falls back to reading the environment variable if any error occurs.
+        """
+        return self.is_enabled(
+            feature_name=self.TOGGLE_KESSEL_TENANT_PERMISSION_CHECK,
+            fallback_function=lambda ignored_toggle_name, ignored_context: settings.KESSEL_TENANT_PERMISSION_CHECK_ENABLED,
         )
 
     def is_v2_edit_api_enabled(self, org_id: str) -> bool:

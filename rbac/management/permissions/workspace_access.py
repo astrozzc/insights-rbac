@@ -30,6 +30,7 @@ in management/workspace/filters.py.
 import logging
 
 from feature_flags import FEATURE_FLAGS
+from management.permissions.kessel_tenant_access import check_tenant_kessel_permission
 from management.permissions.system_user_utils import SystemUserAccessResult, check_system_user_access
 from management.workspace.utils import (
     is_user_allowed_v1,
@@ -176,14 +177,12 @@ class WorkspaceAccessPermission(permissions.BasePermission):
         """
         V1 permission check using legacy role-based access control.
 
-        Admin users have full access (except move requires target validation).
-        Non-admin users are checked against role-based permissions.
+        Users with workspace write access have full access (except move requires target validation).
+        Other users are checked against role-based permissions.
         """
         is_system_user = getattr(request.user, "system", False)
 
-        # Admin users have full access, but for move operations they still need
-        # the target workspace to exist within their tenant
-        if request.user.admin:
+        if check_tenant_kessel_permission(request, "rbac_groups_write"):
             if view.action == "move":
                 result = self._check_move_target_exists_v1(request)
                 if is_system_user:
@@ -198,7 +197,6 @@ class WorkspaceAccessPermission(permissions.BasePermission):
                 logger.info("S2S system user admin access granted %s", log_ctx)
             return True
 
-        # Non-admin user (including system users without admin)
         if is_system_user:
             log_ctx = _build_s2s_log_context(request, view, ws_id)
             logger.info("S2S system user access denied: not admin %s", log_ctx)

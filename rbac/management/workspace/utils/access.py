@@ -30,6 +30,7 @@ from management.permissions.workspace_inventory_access import (
 )
 from management.principal.model import Principal
 from management.principal.proxy import PrincipalProxy
+from management.permissions.kessel_tenant_access import check_tenant_kessel_permission
 from management.utils import get_principal_for_auth, get_principal_from_request, roles_for_principal
 from rest_framework.serializers import ValidationError
 
@@ -467,7 +468,7 @@ def workspace_permission_tuple_set(request, root_workspace_id, is_get_action):
         **{
             "prefetch_lookups_for_ids": "resourceDefinitions",
             "prefetch_lookups_for_groups": "policies__roles__access",
-            "is_org_admin": request.user.admin,
+            "is_org_admin": check_tenant_kessel_permission(request, "rbac_roles_read"),
         },
     )
     accesses = Access.objects.filter(

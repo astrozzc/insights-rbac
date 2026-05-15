@@ -20,6 +20,7 @@
 import logging
 
 from feature_flags import FEATURE_FLAGS
+from management.permissions.kessel_tenant_access import check_tenant_kessel_permission
 from management.permissions.workspace_inventory_access import (
     WorkspaceInventoryAccessChecker,
 )
@@ -228,7 +229,10 @@ class RoleBindingKesselAccessPermission(permissions.BasePermission):
         return None
 
     def _check_single_resource(self, request, resource_type, resource_id, relation, principal_id=None) -> bool:
-        """Check access on a single resource via Kessel or org-admin check.
+        """Check access on a single resource via Kessel.
+
+        For tenant resources, checks tenant-level Kessel permissions using the
+        mapped relation. For workspace resources, delegates to the Inventory API.
 
         Args:
             principal_id: Pre-resolved principal ID for Kessel checks. If None and needed,
@@ -240,10 +244,6 @@ class RoleBindingKesselAccessPermission(permissions.BasePermission):
             return False
 
         if resource_type == "tenant":
-            is_org_admin = getattr(request.user, "admin", False)
-            if not is_org_admin:
-                logger.debug("Denied access for tenant resource: only org admins allowed")
-                return False
             tenant = getattr(request, "tenant", None)
             if tenant is None:
                 logger.debug("Denied access for tenant resource: no tenant on request")
@@ -256,7 +256,8 @@ class RoleBindingKesselAccessPermission(permissions.BasePermission):
                     expected_resource_id,
                 )
                 return False
-            return True
+            kessel_relation = self._map_tenant_relation(relation)
+            return check_tenant_kessel_permission(request, kessel_relation)
 
         if principal_id is None:
             principal_id = get_kessel_principal_id(request)
@@ -270,3 +271,16 @@ class RoleBindingKesselAccessPermission(permissions.BasePermission):
             principal_id=principal_id,
             relation=relation,
         )
+
+    _TENANT_RELATION_MAP = {
+        "create": "rbac_assignments_write",
+        "edit": "rbac_assignments_write",
+        "role_binding_grant": "rbac_assignments_write",
+        "role_binding_revoke": "rbac_assignments_write",
+        "view": "rbac_assignments_read",
+        "role_binding_view": "rbac_assignments_read",
+    }
+
+    def _map_tenant_relation(self, relation: str) -> str:
+        """Map a workspace/role-binding relation to its tenant-level Kessel equivalent."""
+        return self._TENANT_RELATION_MAP.get(relation, "rbac_assignments_write")
