@@ -143,3 +143,41 @@ class TenantMapping(models.Model):
             return DefaultAccessType.ADMIN, Scope.TENANT
 
         return None
+
+
+# We unfortunately need raw SQL due to Django not having a built-in way to do locks FOR SHARE.
+_LOCK_FOR_SHARE_SQL = (  # sourcery: disable=sql-injection-risk
+    "SELECT * FROM management_tenantmapping WHERE tenant_id = %s FOR SHARE"
+)
+
+
+def try_lock_mapping_for_share(tenant: Tenant) -> Optional[TenantMapping]:
+    """Return the TenantMapping for the provided tenant locked FOR SHARE if it exists (otherwise None)."""
+    mappings = list(TenantMapping.objects.raw(_LOCK_FOR_SHARE_SQL, [tenant.id]))
+
+    if len(mappings) > 1:
+        raise AssertionError(f"Found multiple tenant mappings for tenant {tenant.org_id}?")
+
+    if len(mappings) == 0:
+        return None
+
+    return mappings[0]
+
+
+def lock_mapping_for_share(tenant: Tenant) -> TenantMapping:
+    """
+    Return the TenantMapping for the provided tenant locked FOR SHARE.
+
+    Raises TenantNotBootstrappedError if no TenantMapping exists.
+    """
+    # TODO fix circular dependency
+    from management.tenant_service.v2 import TenantNotBootstrappedError
+
+    mapping = try_lock_mapping_for_share(tenant)
+
+    if mapping is None:
+        raise TenantNotBootstrappedError(
+            f"Tenant {tenant.org_id} has no TenantMapping; writes require tenant bootstrapping."
+        )
+
+    return mapping
