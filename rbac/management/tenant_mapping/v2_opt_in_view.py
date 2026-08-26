@@ -19,10 +19,11 @@
 from typing import Optional
 
 from management.atomic_transactions import atomic_with_retry
+from management.permissions import AdminAccessPermission
 from management.tenant_mapping.model import TenantMapping
 from management.tenant_mapping.v2_activation import set_v2_opt_in_state
 from management.tenant_mapping.v2_eligibility import OptInEligibleState, OptInIneligibleState, check_v2_eligibility
-from rest_framework import permissions, serializers
+from rest_framework import permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework.viewsets import ViewSet
 
@@ -34,7 +35,7 @@ class _OptInPermission(permissions.BasePermission):
         if view.action == "status":
             return True
 
-        return request.user.admin
+        return AdminAccessPermission().has_permission(request, view)
 
 
 class _OptInRequestSerializer(serializers.Serializer):
@@ -133,7 +134,7 @@ class OptInViewSet(ViewSet):
         result = check_v2_eligibility(request.tenant)
 
         if not isinstance(result, OptInEligibleState):
-            return Response(self._format_eligibility_data(result), 422)
+            return Response(self._format_eligibility_data(result), status.HTTP_422_UNPROCESSABLE_ENTITY)
 
         set_v2_opt_in_state(request.tenant, True)
         return self._state_response_for(request.tenant)
@@ -142,4 +143,4 @@ class OptInViewSet(ViewSet):
     def eligibility(self, request):
         """Determine whether the requestor's tenant can be opted into V2."""
         result = check_v2_eligibility(request.tenant)
-        return Response(self._format_eligibility_data(result), 200)
+        return Response(self._format_eligibility_data(result), status.HTTP_200_OK)

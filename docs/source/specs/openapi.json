@@ -2834,16 +2834,6 @@
           "401": {
             "description": "Unauthorized"
           },
-          "403": {
-            "description": "Insufficient permissions to list permissions",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error403"
-                }
-              }
-            }
-          },
           "500": {
             "description": "Unexpected Error",
             "content": {
@@ -2964,7 +2954,7 @@
           "403": {
             "description": "Access is forbidden.",
             "content": {
-              "application/problem+json": {
+              "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error403"
                 }
@@ -2974,7 +2964,7 @@
           "500": {
             "description": "Server error",
             "content": {
-              "application/problem+json": {
+              "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }

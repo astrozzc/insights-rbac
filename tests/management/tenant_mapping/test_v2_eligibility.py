@@ -17,9 +17,14 @@
 """Tests for V2 eligibility."""
 
 from django.test import TestCase, override_settings
-
 from management.group.model import Group
-from management.tenant_mapping.v2_eligibility import OptInIneligibleRole, OptInIneligibleState, check_v2_eligibility
+from management.tenant_mapping.v2_activation import set_v2_opt_in_state
+from management.tenant_mapping.v2_eligibility import (
+    OptInEligibleState,
+    OptInIneligibleRole,
+    OptInIneligibleState,
+    check_v2_eligibility,
+)
 from tests.management.role.test_dual_write import RbacFixture
 from tests.v2_util import bootstrap_tenant_for_v2_test
 
@@ -34,6 +39,24 @@ class V2EligibilityTestCase(TestCase):
 
         self.fixture = RbacFixture()
         self.tenant = self.fixture.new_tenant("some-org").tenant
+
+    def test_eligible(self):
+        group, _ = self.fixture.new_group("g", self.tenant, ["p1"])
+
+        system_role = self.fixture.new_system_role("system", ["app:*:*"])
+        self.fixture.add_role_to_group(system_role, group)
+
+        self.fixture.new_custom_role("eligible", self.fixture.workspace_access(["app:*:*"]), self.tenant)
+
+        self.assertIsInstance(check_v2_eligibility(self.tenant), OptInEligibleState)
+
+    def test_eligible_opted_in(self):
+        # Some tenants will have opted-in while having ineligible roles. We should still say they are eligible to opt in
+        # again, since opting in is idempotent.
+        self.fixture.new_custom_role("custom", self.fixture.workspace_access(["ineligible:*:*"]), self.tenant)
+        set_v2_opt_in_state(self.tenant, True)
+
+        self.assertIsInstance(check_v2_eligibility(self.tenant), OptInEligibleState)
 
     def test_ineligible_not_bootstrapped(self):
         new_tenant = self.fixture.new_unbootstrapped_tenant("new-org")

@@ -20,7 +20,7 @@ from unittest.mock import ANY
 from django.test import override_settings
 from django.urls import reverse
 from management.tenant_mapping.model import TenantMapping
-from management.tenant_mapping.v2_activation import is_v2_opted_in, lock_v2_opt_in_state, set_v2_opt_in_state
+from management.tenant_mapping.v2_activation import is_v2_opted_in, set_v2_opt_in_state
 from rest_framework import status
 from rest_framework.test import APIClient
 from tests.identity_request import IdentityRequest
@@ -162,6 +162,8 @@ class OptInViewSetTest(IdentityRequest):
             [{"name": custom_role.name, "uuid": str(custom_role.uuid), "ineligible_applications": ["ineligible"]}],
         )
 
+        return response
+
     def test_opt_in_ineligible(self):
         self._assert_ineligible_response(self._send_opt_in_request, status.HTTP_422_UNPROCESSABLE_ENTITY)
         self._assert_status(False)
@@ -189,13 +191,16 @@ class OptInViewSetTest(IdentityRequest):
     def test_eligibility_eligible(self):
         response = self._get_eligibility()
         self.assertEqual(response.data, {"eligible": True})
+        self.assertNotIn("Cache-Control", response.headers)
 
     def test_eligibility_opted_in(self):
         self._opt_in_and_assert_success()
 
         response = self._get_eligibility()
         self.assertEqual(response.data, {"eligible": True})
+        self.assertNotIn("Cache-Control", response.headers)
 
     def test_eligibility_ineligible(self):
-        self._assert_ineligible_response(self._get_eligibility, status.HTTP_200_OK)
+        response = self._assert_ineligible_response(self._get_eligibility, status.HTTP_200_OK)
         self._assert_status(False)
+        self.assertNotIn("Cache-Control", response.headers)

@@ -94,8 +94,9 @@ class OptInIneligibleState:
         if not isinstance(self.bootstrapped, bool):
             raise TypeError(f"Expected bootstrapped to be a bool, but got: {self.bootstrapped!r}")
 
-        if not isinstance(self.ineligible_groups, tuple) and all(
-            isinstance(g, OptInIneligibleGroup) for g in self.ineligible_groups
+        if not (
+            isinstance(self.ineligible_groups, tuple)
+            and all(isinstance(g, OptInIneligibleGroup) for g in self.ineligible_groups)
         ):
             raise TypeError(
                 f"Expected ineligible_groups to be a tuple of OptInIneligibleGroup, but got: "
