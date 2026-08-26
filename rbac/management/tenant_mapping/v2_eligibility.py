@@ -209,7 +209,7 @@ def check_v2_eligibility(tenant: Tenant) -> OptInEligibleState | OptInIneligible
     """
     Determine whether the provided tenant is eligible to opt into V2.
 
-    Returns an OptInEligibleState if the tenant is eligible, or na OptInIneligibleState otherwise.
+    Returns an OptInEligibleState if the tenant is eligible, or an OptInIneligibleState otherwise.
     """
     mapping = try_lock_mapping_for_share(tenant)
 
