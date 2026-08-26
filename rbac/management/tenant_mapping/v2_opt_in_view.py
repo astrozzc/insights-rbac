@@ -41,11 +41,16 @@ class _OptInPermission(permissions.BasePermission):
 class _OptInRequestSerializer(serializers.Serializer):
     v2_opted_in = serializers.BooleanField(required=False, allow_null=True)
 
-    def validate_v2_opted_in(self, value):
-        if value not in (None, True):
-            raise serializers.ValidationError("v2_opted_in can only be set to true")
+    def to_internal_value(self, data):
+        result = super().to_internal_value(data)
 
-        return value
+        # DRF treats an absent v2_opted_in as None (since allow_null is True) then, *in contradiction with its
+        # documentation*, calls validate_v2_opted_in if defined. Since validate_v2_opted_in can't distinguish between
+        # an explicit null and an absent value, we have to this manually here.
+        if ("v2_opted_in" in data) and (result["v2_opted_in"] is not True):
+            raise serializers.ValidationError({"v2_opted_in": "v2_opted_in, if present, can only be set to true"})
+
+        return result
 
 
 class _OptInIneligibleRoleSerializer(serializers.Serializer):
@@ -124,17 +129,19 @@ class OptInViewSet(ViewSet):
         serializer = _OptInRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        if serializer.validated_data["v2_opted_in"] is None:
+        requested_state = serializer.validated_data.get("v2_opted_in")
+
+        if requested_state is None:
             # We've not been asked to opt the tenant in, so we have nothing to do.
             return self._state_response_for(request.tenant)
 
-        if serializer.validated_data["v2_opted_in"] is not True:
+        if requested_state is not True:
             raise AssertionError("Validation should have rejected v2_opted_in being false")
 
-        result = check_v2_eligibility(request.tenant)
+        eligibility_result = check_v2_eligibility(request.tenant)
 
-        if not isinstance(result, OptInEligibleState):
-            return Response(self._format_eligibility_data(result), status.HTTP_422_UNPROCESSABLE_ENTITY)
+        if not isinstance(eligibility_result, OptInEligibleState):
+            return Response(self._format_eligibility_data(eligibility_result), status.HTTP_422_UNPROCESSABLE_ENTITY)
 
         set_v2_opt_in_state(request.tenant, True)
         return self._state_response_for(request.tenant)

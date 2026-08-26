@@ -56,7 +56,7 @@ class OptInViewSetTest(IdentityRequest):
         if body is None:
             body = {"v2_opted_in": True}
 
-        return self.client.patch(self.status_url, body, **headers)
+        return self.client.patch(self.status_url, body, content_type="application/json", **headers)
 
     def _get_eligibility(self, headers: Optional[dict] = None):
         if headers is None:
@@ -180,7 +180,15 @@ class OptInViewSetTest(IdentityRequest):
         response = self._send_opt_in_request(body={"v2_opted_in": False})
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("v2_opted_in can only be set to true", response.content.decode())
+        self.assertIn("v2_opted_in, if present, can only be set to true", response.content.decode())
+
+        self._assert_status(False)
+
+    def test_opt_in_null_prohibited(self):
+        response = self._send_opt_in_request(body={"v2_opted_in": None})
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("v2_opted_in, if present, can only be set to true", response.content.decode())
 
         self._assert_status(False)
 
