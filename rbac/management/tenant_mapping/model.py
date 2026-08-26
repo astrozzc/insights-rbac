@@ -24,6 +24,7 @@ from typing import Callable, ClassVar, Optional
 from django.db import models
 from django.db.models import CheckConstraint, Q
 from management.permission.scope_service import Scope
+from management.tenant_mapping.exceptions import TenantNotBootstrappedError
 from management.utils import as_uuid
 
 from api.models import Tenant
@@ -170,9 +171,6 @@ def lock_mapping_for_share(tenant: Tenant) -> TenantMapping:
 
     Raises TenantNotBootstrappedError if no TenantMapping exists.
     """
-    # TODO fix circular dependency
-    from management.tenant_service.v2 import TenantNotBootstrappedError
-
     mapping = try_lock_mapping_for_share(tenant)
 
     if mapping is None:
