@@ -106,9 +106,9 @@ class ReplicateUpdatedWorkspacesTest(TestCase):
         self.default_workspace = Workspace.objects.default(tenant=self.tenant)
         self.workspace = WorkspaceService(NoopReplicator()).create({"name": "a workspace"}, request_tenant=self.tenant)
 
-        self.workspace.created = "2026-06-25T00:00:00Z"
-        self.workspace.modified = "2026-06-25T00:00:00Z"
-        self.workspace.save()
+        Workspace.objects.filter(pk=self.workspace.id).update(
+            created="2026-06-25T00:00:00Z", modified="2026-06-25T00:00:00Z"
+        )
 
     def _do_replicate(self, stream: WorkspaceEventStream, **kwargs) -> list[WorkspaceEvent]:
         replicator = WorkspaceCacheReplicator(NoopReplicator())
@@ -180,8 +180,7 @@ class ReplicateUpdatedWorkspacesTest(TestCase):
         self._assert_event_ids(events, [str(self.workspace.id)])
 
     def test_include_modified_default_workspace(self):
-        self.default_workspace.modified = "2026-06-25T00:00:00Z"
-        self.default_workspace.save()
+        Workspace.objects.filter(pk=self.default_workspace.pk).update(modified="2026-06-25T00:00:00Z")
 
         events = self._do_replicate(
             stream=WorkspaceEventStream.STANDARD,
