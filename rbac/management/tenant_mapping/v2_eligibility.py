@@ -164,7 +164,7 @@ def _ineligible_groups_for(tenant: Tenant, ineligible_apps: frozenset[str]) -> l
     ineligible_groups = []
 
     for group in group_query.iterator(chunk_size=100):
-        ineligible_roles: list[OptInIneligibleRole] = [
+        ineligible_roles: set[OptInIneligibleRole] = {
             role_result
             for role_result in (
                 cached_ineligibility_for(role)
@@ -172,7 +172,7 @@ def _ineligible_groups_for(tenant: Tenant, ineligible_apps: frozenset[str]) -> l
                 for role in policy.ineligible_system_roles
             )
             if role_result is not None
-        ]
+        }
 
         if not ineligible_roles:
             continue
