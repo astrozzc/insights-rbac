@@ -685,7 +685,31 @@ def process_principal_events_from_kafka(
     # Add authentication if configured
     kafka_auth = getattr(settings, "KAFKA_AUTH", None)
     if kafka_auth:
-        kafka_config.update(kafka_auth)
+        # Filter out producer-specific configs that KafkaConsumer rejects.
+        # settings.KAFKA_AUTH is shared with the DLQ producer and includes producer-only
+        # options (e.g. "retries"), which raise KafkaConfigurationError on a consumer.
+        producer_only_configs = {
+            "retries",
+            "max_in_flight_requests_per_connection",
+            "acks",
+            "enable_idempotence",
+            "transactional_id",
+            "transaction_timeout_ms",
+            "compression_type",
+            "batch_size",
+            "linger_ms",
+            "buffer_memory",
+            "max_block_ms",
+            "delivery_timeout_ms",
+        }
+        consumer_auth = {k: v for k, v in kafka_auth.items() if k not in producer_only_configs}
+        filtered_configs = set(kafka_auth.keys()) & producer_only_configs
+        if filtered_configs:
+            logger.info(
+                "process_principal_events_from_kafka: Filtered producer-only configs for consumer: %s",
+                filtered_configs,
+            )
+        kafka_config.update(consumer_auth)
 
     # Initialize consumer to None to avoid UnboundLocalError in finally block
     consumer = None
