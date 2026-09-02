@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "9296a4a990a7be9f8198fbdec59e249092d962034452494067b0d2d602b1e1bd"
+            "sha256": "bd9d832fab9832dfdfc6df83d183c5b22221de2024d7280a97735c04fd06d9c2"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -91,11 +91,11 @@
         },
         "botocore": {
             "hashes": [
-                "sha256:685510e5f4c0f321806c815a60f121a176c0969665f053c4a336209cbe62b1d5",
-                "sha256:8fc0a3c56078c629320b021edadf7a45d289eea21a4988ada6a02277e5bbbdc0"
+                "sha256:0e943c77ab6a54aaaf4d57e6026ede5c3dca341af71ce91f71849a6eae9d5dbf",
+                "sha256:4efc7fbd6e7616edbd55623bb585a044906149b9a5d3d8558420506526e5a5ac"
             ],
             "markers": "python_version >= '3.10'",
-            "version": "==1.43.85"
+            "version": "==1.43.86"
         },
         "celery": {
             "hashes": [
@@ -2400,12 +2400,12 @@
         },
         "faker": {
             "hashes": [
-                "sha256:a92dff7f310e61fb544c61720e15edb2e7448bc33d15a321a99e9ab7b94abf54",
-                "sha256:ddbafa55c94d5b69c08ced3a7f202614204a02e07ba6548c729b8d18acc0b490"
+                "sha256:69927515d61759c8a257540b8a91891cd622ba1c24a386b62a0a777e44ba46a9",
+                "sha256:72e421098664edf38478f4269a5d5a539337de5da18883ce67cb1e6bb96b0b3a"
             ],
             "index": "pypi",
             "markers": "python_version >= '3.10'",
-            "version": "==40.37.0"
+            "version": "==40.38.0"
         },
         "filelock": {
             "hashes": [
@@ -3025,11 +3025,11 @@
         },
         "virtualenv": {
             "hashes": [
-                "sha256:67a6a68fef3ad8ca16b8b89f33fd8f97996cc0bf0db31629d07ecf8dec539a2c",
-                "sha256:6874376f99ba6b8d4e3ee8bde67f9285412400c7d5b29ba41ee6daa5e0221bdc"
+                "sha256:1dc49c790072a9072cb1803f9bd62aa69cd583077cada32390f75505cdc64c9b",
+                "sha256:3040eb3cbf5d32b10ffd57d167e6a162237ad82ba7d8cf1400a1efed593d85ac"
             ],
             "markers": "python_version >= '3.9'",
-            "version": "==21.7.7"
+            "version": "==21.7.8"
         }
     }
 }
