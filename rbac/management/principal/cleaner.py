@@ -26,7 +26,7 @@ from typing import NamedTuple, Optional
 from xml.parsers.expat import ExpatError
 
 import xmltodict
-from core.kafka import RBACProducer
+from core.kafka import PRODUCER_ONLY_CONFIGS, RBACProducer
 from django.conf import settings
 from django.db import connection, transaction
 from kafka import KafkaConsumer
@@ -685,25 +685,10 @@ def process_principal_events_from_kafka(
     # Add authentication if configured
     kafka_auth = getattr(settings, "KAFKA_AUTH", None)
     if kafka_auth:
-        # Filter out producer-specific configs that KafkaConsumer rejects.
         # settings.KAFKA_AUTH is shared with the DLQ producer and includes producer-only
-        # options (e.g. "retries"), which raise KafkaConfigurationError on a consumer.
-        producer_only_configs = {
-            "retries",
-            "max_in_flight_requests_per_connection",
-            "acks",
-            "enable_idempotence",
-            "transactional_id",
-            "transaction_timeout_ms",
-            "compression_type",
-            "batch_size",
-            "linger_ms",
-            "buffer_memory",
-            "max_block_ms",
-            "delivery_timeout_ms",
-        }
-        consumer_auth = {k: v for k, v in kafka_auth.items() if k not in producer_only_configs}
-        filtered_configs = set(kafka_auth.keys()) & producer_only_configs
+        # options (e.g. "retries") that KafkaConsumer rejects; filter them out here.
+        consumer_auth = {k: v for k, v in kafka_auth.items() if k not in PRODUCER_ONLY_CONFIGS}
+        filtered_configs = set(kafka_auth.keys()) & PRODUCER_ONLY_CONFIGS
         if filtered_configs:
             logger.info(
                 "process_principal_events_from_kafka: Filtered producer-only configs for consumer: %s",
