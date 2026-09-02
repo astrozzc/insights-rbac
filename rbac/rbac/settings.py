@@ -26,29 +26,27 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/2.0/ref/settings/
 """
 
+import datetime
+import logging
 import os
 import ssl
+import sys
 from urllib.parse import quote as _url_quote
 
-import datetime
-import sys
-import logging
 import pytz
 import redis
-
+from app_common_python import DependencyEndpoints, KafkaTopics, LoadedConfig
 from boto3 import client as boto_client
 from corsheaders.defaults import default_headers
 from dateutil.parser import parse as parse_dt
-from app_common_python import LoadedConfig, KafkaTopics, DependencyEndpoints
 from feature_flags import FEATURE_FLAGS
+
+from . import database
+from .env import ENVIRONMENT
 
 # Database
 # https://docs.djangoproject.com/en/2.0/ref/settings/#databases
 
-
-from . import database
-
-from .env import ENVIRONMENT
 
 # Sentry monitoring configuration
 # Note: Sentry is disabled unless it is explicitly turned on by setting DSN
@@ -472,7 +470,9 @@ ROLE_CREATE_ALLOW_LIST = ENVIRONMENT.get_value("ROLE_CREATE_ALLOW_LIST", default
 # Dual write migration configuration
 REPLICATION_TO_RELATION_ENABLED = ENVIRONMENT.bool("REPLICATION_TO_RELATION_ENABLED", default=False)
 EPH_ENV = ENVIRONMENT.bool("EPH_ENV", default=False)
-V2_MIGRATION_APP_EXCLUDE_LIST = ENVIRONMENT.get_value("V2_MIGRATION_APP_EXCLUDE_LIST", default="").split(",")
+V2_MIGRATION_APP_EXCLUDE_LIST = [
+    app.strip() for app in ENVIRONMENT.get_value("V2_MIGRATION_APP_EXCLUDE_LIST", default="").split(",") if app.strip()
+]
 V2_BOOTSTRAP_TENANT = ENVIRONMENT.bool("V2_BOOTSTRAP_TENANT", default=False)
 
 # Migration Setup
