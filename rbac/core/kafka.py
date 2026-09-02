@@ -25,6 +25,26 @@ from kafka.errors import KafkaError
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
+# Producer-only client configs that KafkaConsumer rejects. settings.KAFKA_AUTH is shared
+# between producers and consumers, so these must be filtered out before building a consumer
+# to avoid KafkaConfigurationError (e.g. "Unrecognized configs: {'retries'}").
+PRODUCER_ONLY_CONFIGS = frozenset(
+    {
+        "retries",
+        "max_in_flight_requests_per_connection",
+        "acks",
+        "enable_idempotence",
+        "transactional_id",
+        "transaction_timeout_ms",
+        "compression_type",
+        "batch_size",
+        "linger_ms",
+        "buffer_memory",
+        "max_block_ms",
+        "delivery_timeout_ms",
+    }
+)
+
 
 class FakeKafkaProducer:
     """Fake kafka producer to enable local development without kafka server."""

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import grpc
+from core.kafka import PRODUCER_ONLY_CONFIGS
 from django.conf import settings
 from django.db import OperationalError, connection, transaction
 from google.protobuf import json_format
@@ -854,24 +855,9 @@ class RBACKafkaConsumer:
         try:
             if kafka_auth:
                 # Filter out producer-specific configurations that are not valid for consumers
-                # Producer-only configs: retries, max_in_flight_requests_per_connection, acks, etc.
-                producer_only_configs = {
-                    "retries",
-                    "max_in_flight_requests_per_connection",
-                    "acks",
-                    "enable_idempotence",
-                    "transactional_id",
-                    "transaction_timeout_ms",
-                    "compression_type",
-                    "batch_size",
-                    "linger_ms",
-                    "buffer_memory",
-                    "max_block_ms",
-                    "delivery_timeout_ms",
-                }
-                consumer_auth = {k: v for k, v in kafka_auth.items() if k not in producer_only_configs}
+                consumer_auth = {k: v for k, v in kafka_auth.items() if k not in PRODUCER_ONLY_CONFIGS}
                 # Log if any producer-specific configs were filtered out
-                filtered_configs = set(kafka_auth.keys()) & producer_only_configs
+                filtered_configs = set(kafka_auth.keys()) & PRODUCER_ONLY_CONFIGS
                 if filtered_configs:
                     logger.info(f"Filtered out producer-specific configs for consumer: {filtered_configs}")
                 consumer = KafkaConsumer(

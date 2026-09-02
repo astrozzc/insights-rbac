@@ -26,7 +26,7 @@ from typing import NamedTuple, Optional
 from xml.parsers.expat import ExpatError
 
 import xmltodict
-from core.kafka import RBACProducer
+from core.kafka import PRODUCER_ONLY_CONFIGS, RBACProducer
 from django.conf import settings
 from django.db import connection, transaction
 from kafka import KafkaConsumer
@@ -685,7 +685,16 @@ def process_principal_events_from_kafka(
     # Add authentication if configured
     kafka_auth = getattr(settings, "KAFKA_AUTH", None)
     if kafka_auth:
-        kafka_config.update(kafka_auth)
+        # settings.KAFKA_AUTH is shared with the DLQ producer and includes producer-only
+        # options (e.g. "retries") that KafkaConsumer rejects; filter them out here.
+        consumer_auth = {k: v for k, v in kafka_auth.items() if k not in PRODUCER_ONLY_CONFIGS}
+        filtered_configs = set(kafka_auth.keys()) & PRODUCER_ONLY_CONFIGS
+        if filtered_configs:
+            logger.info(
+                "process_principal_events_from_kafka: Filtered producer-only configs for consumer: %s",
+                filtered_configs,
+            )
+        kafka_config.update(consumer_auth)
 
     # Initialize consumer to None to avoid UnboundLocalError in finally block
     consumer = None
