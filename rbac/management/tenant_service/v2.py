@@ -17,14 +17,13 @@ from management.relation_replicator.relation_replicator import (
     WorkspaceEventStream,
 )
 from management.relation_replicator.types import RelationTuple
+from management.tenant_mapping.exceptions import TenantNotBootstrappedError
 from management.tenant_mapping.model import DefaultAccessType, TenantMapping, logger
 from management.tenant_service.relations import default_role_binding_tuples
-from management.tenant_service.tenant_service import BootstrappedTenant
-from management.tenant_service.tenant_service import _ensure_principal_with_user_id_in_tenant
+from management.tenant_service.tenant_service import BootstrappedTenant, _ensure_principal_with_user_id_in_tenant
 from management.workspace.model import Workspace
 from management.workspace.utils.event import make_workspace_event
 from migration_tool.utils import create_relationship
-
 
 from api.models import Tenant, User
 
@@ -117,12 +116,6 @@ def try_lock_tenants_for_bootstrap(tenants: Iterable[Tenant]) -> dict[Tenant, Op
         )
 
     return result
-
-
-class TenantNotBootstrappedError(Exception):
-    """Raised when a tenant is required to have been bootstrapped but has not been."""
-
-    pass
 
 
 def try_lock_tenant_for_bootstrap(tenant: Tenant) -> Optional[TenantBootstrapLock]:
