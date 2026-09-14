@@ -49,7 +49,7 @@ from management.permission.scope_service import (
 from management.principal.model import Principal
 from management.role.platform import platform_v2_role_uuid_for
 from management.role.v2_model import PlatformRoleV2, RoleV2
-from management.role.v2_role_scope import is_ocm_v2_role, ocm_roles_allowed_for_workspace_binding
+from management.role.v2_service import is_ocm_v2_role, ocm_roles_allowed_for_workspace_binding
 from management.role_binding.model import RoleBinding, RoleBindingGroup, RoleBindingPrincipal
 from management.role_binding.util import lookup_binding_subjects
 from management.subject import Subject, SubjectType
@@ -1154,6 +1154,15 @@ class RoleBindingService:
         if self._skip_scope_validation or not roles:
             return
 
+        if not ocm_roles_allowed_for_workspace_binding(resource_type, resource_id, self.tenant):
+            ocm_mismatched = [f"{role.name} ({role.uuid})" for role in roles if is_ocm_v2_role(role)]
+            if ocm_mismatched:
+                raise InvalidFieldError(
+                    "roles",
+                    "The following OCM roles can only be assigned at the Default Workspace: "
+                    + ", ".join(ocm_mismatched),
+                )
+
         is_standard_workspace = False
         expected: Scope
         if resource_type == "workspace":
@@ -1192,15 +1201,6 @@ class RoleBindingService:
                 "roles",
                 f"The following roles are not scoped for this resource ({scope_label}): {', '.join(mismatched)}",
             )
-
-        if not ocm_roles_allowed_for_workspace_binding(resource_type, resource_id, self.tenant):
-            ocm_mismatched = [f"{role.name} ({role.uuid})" for role in roles if is_ocm_v2_role(role)]
-            if ocm_mismatched:
-                raise InvalidFieldError(
-                    "roles",
-                    "The following OCM roles can only be assigned at the Default Workspace: "
-                    + ", ".join(ocm_mismatched),
-                )
 
     def _replace_role_bindings(
         self,

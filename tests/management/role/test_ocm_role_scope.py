@@ -20,13 +20,14 @@ from django.test import override_settings
 from management.exceptions import InvalidFieldError
 from management.models import Permission, Role
 from management.role.model import Access, ExtRoleRelation, ExtTenant
-from management.role.v2_role_scope import (
+from management.role.v2_model import RoleV2, SeededRoleV2
+from management.role.v2_role_scope import v2_role_excluded_application_permission_ids_cache
+from management.role.v2_service import (
+    RoleV2Service,
     is_ocm_v2_role,
     ocm_roles_allowed_for_workspace_binding,
 )
-from management.role.v2_model import RoleV2, SeededRoleV2
-from management.role.v2_role_scope import v2_role_excluded_application_permission_ids_cache
-from management.role.v2_service import RoleV2Service
+from management.role_binding.model import RoleBinding
 from management.role_binding.service import RoleBindingService
 from management.workspace.model import Workspace
 from tests.identity_request import IdentityRequest
@@ -171,6 +172,14 @@ class OcmRoleV2ListTests(IdentityRequest):
         )
         self.assertIn(ocm_perm_role.name, names)
 
+    @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=[])
+    def test_list_excludes_ocm_role_without_resource_type(self):
+        v2_role_excluded_application_permission_ids_cache.invalidate()
+        ocm_perm_role = create_ocm_seeded_role("OCM Cluster Editor", with_permission=True)
+        names = set(self.service.list({}).values_list("name", flat=True))
+        self.assertNotIn(ocm_perm_role.name, names)
+        self.assertIn(self.non_ocm_role.name, names)
+
 
 @override_settings(ATOMIC_RETRY_DISABLED=True, V2_MIGRATION_APP_EXCLUDE_LIST=[])
 class OcmRoleBindingValidationTests(IdentityRequest):
@@ -202,6 +211,16 @@ class OcmRoleBindingValidationTests(IdentityRequest):
 
         return Group.objects.create(name="test group", tenant=self.tenant)
 
+    def _bound_role_uuids(self, resource_type: str, resource_id: str) -> set:
+        return set(
+            RoleBinding.objects.filter(
+                tenant=self.tenant,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                group_entries__group=self.group,
+            ).values_list("role__uuid", flat=True)
+        )
+
     def test_allows_ocm_role_on_default_workspace(self):
         result = self.service.update_role_bindings_for_subject(
             resource_type="workspace",
@@ -211,6 +230,10 @@ class OcmRoleBindingValidationTests(IdentityRequest):
             role_ids=[str(self.ocm_role.uuid)],
         )
         self.assertEqual({r.uuid for r in result.roles}, {self.ocm_role.uuid})
+        self.assertEqual(
+            self._bound_role_uuids("workspace", str(self.default_workspace.id)),
+            {self.ocm_role.uuid},
+        )
 
     def test_rejects_ocm_role_on_standard_workspace(self):
         with self.assertRaises(InvalidFieldError) as ctx:
@@ -222,6 +245,7 @@ class OcmRoleBindingValidationTests(IdentityRequest):
                 role_ids=[str(self.ocm_role.uuid)],
             )
         self.assertIn("OCM Cluster Viewer", str(ctx.exception))
+        self.assertEqual(self._bound_role_uuids("workspace", str(self.standard_workspace.id)), set())
 
     def test_rejects_ocm_role_on_root_workspace(self):
         with self.assertRaises(InvalidFieldError) as ctx:
@@ -233,6 +257,7 @@ class OcmRoleBindingValidationTests(IdentityRequest):
                 role_ids=[str(self.ocm_role.uuid)],
             )
         self.assertIn("OCM Cluster Viewer", str(ctx.exception))
+        self.assertEqual(self._bound_role_uuids("workspace", str(self.root_workspace.id)), set())
 
     def test_rejects_ocm_role_on_tenant(self):
         with self.assertRaises(InvalidFieldError) as ctx:
@@ -244,6 +269,10 @@ class OcmRoleBindingValidationTests(IdentityRequest):
                 role_ids=[str(self.ocm_role.uuid)],
             )
         self.assertIn("OCM Cluster Viewer", str(ctx.exception))
+        self.assertEqual(
+            self._bound_role_uuids("tenant", self.tenant.tenant_resource_id()),
+            set(),
+        )
 
     def test_rejects_ocm_role_with_permissions_on_standard_workspace(self):
         """OCM-specific validation applies even when the role has workspace-granular permissions."""
@@ -257,3 +286,4 @@ class OcmRoleBindingValidationTests(IdentityRequest):
                 role_ids=[str(ocm_perm_role.uuid)],
             )
         self.assertIn("OCM roles can only be assigned at the Default Workspace", str(ctx.exception))
+        self.assertEqual(self._bound_role_uuids("workspace", str(self.standard_workspace.id)), set())
