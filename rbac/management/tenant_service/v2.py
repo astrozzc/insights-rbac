@@ -309,7 +309,9 @@ class V2TenantBootstrapService:
 
         # Add user to default group if not a service account
         if not user.is_service_account:
-            _ensure_principal_with_user_id_in_tenant(user, bootstrapped_tenant.tenant, upsert=upsert)
+            _ensure_principal_with_user_id_in_tenant(
+                user, bootstrapped_tenant.tenant, upsert=upsert, replicator=self._replicator
+            )
             tuples_to_add, tuples_to_remove = self._default_group_tuple_edits(user, mapping)
 
         self._replicator.replicate(
