@@ -3,12 +3,14 @@
 from unittest.mock import patch
 
 from django.db import IntegrityError
+from django.test import override_settings
 
 from api.models import Tenant, User
 from management.group.model import Group
 from management.principal.model import Principal
 from management.role_binding.model import RoleBinding, RoleBindingPrincipal
 from management.role.v2_model import CustomRoleV2
+from management.tenant_service import tenant_service
 from management.tenant_service.tenant_service import (
     _ensure_principal_with_user_id_in_tenant,
     merge_obsolete_principal_into_survivor,
@@ -36,6 +38,7 @@ class _ReplicationTracker:
         self.tuples_removed.extend(event.remove)
 
 
+@override_settings(ATOMIC_RETRY_DISABLED=True)
 class MergePrincipalTests(IdentityRequest):
     """Tests for obsolete-into-survivor principal merge."""
 
@@ -105,9 +108,10 @@ class MergePrincipalTests(IdentityRequest):
         self.assertIsNone(result)
 
         expected_removed = Group.relationship_to_user_id_for_group(str(obsolete_group.uuid), "54181241")
-        self.assertEqual(len(tracker.tuples_removed), 1)
-        self.assertEqual(tracker.tuples_removed[0], expected_removed)
-        self.assertEqual(len(tracker.tuples_added), 1)
+        survivor.refresh_from_db()
+        expected_added = obsolete_group.relationship_to_principal(survivor)
+        self.assertCountEqual(tracker.tuples_removed, [expected_removed])
+        self.assertCountEqual(tracker.tuples_added, [expected_added])
 
     def test_merge_transfers_role_binding_entries(self):
         """Direct role-binding entries on the obsolete principal move to the survivor."""
@@ -134,8 +138,8 @@ class MergePrincipalTests(IdentityRequest):
             RoleBindingPrincipal.objects.filter(binding=binding, principal=survivor, source="direct").exists()
         )
 
-    def test_merge_cross_tenant_assigns_user_id_and_deletes_obsolete(self):
-        """Cross-tenant merge moves user_id to the survivor without transferring tenant-scoped data."""
+    def test_merge_refuses_cross_tenant(self):
+        """Cross-tenant merge is not supported; both principals are left unchanged."""
         other_tenant = Tenant.objects.create(
             tenant_name="other-tenant",
             account_id="99999999",
@@ -150,10 +154,10 @@ class MergePrincipalTests(IdentityRequest):
         result = merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241")
         self.assertIsNone(result)
 
-        self.assertFalse(Principal.objects.filter(pk=obsolete.pk).exists())
+        self.assertTrue(Principal.objects.filter(pk=obsolete.pk).exists())
         survivor.refresh_from_db()
-        self.assertEqual(survivor.user_id, "54181241")
-        self.assertEqual(list(other_group.principals.all()), [])
+        self.assertIsNone(survivor.user_id)
+        self.assertEqual(list(other_group.principals.all()), [obsolete])
 
     def test_ensure_principal_merges_on_user_id_conflict(self):
         """Assigning a taken user_id merges obsolete into the current username principal."""
@@ -174,6 +178,24 @@ class MergePrincipalTests(IdentityRequest):
         survivor.refresh_from_db()
         self.assertEqual(survivor.user_id, "54181241")
         self.assertEqual(list(group.principals.all()), [survivor])
+
+    def test_ensure_principal_skips_merge_when_principal_has_stale_user_id(self):
+        """A principal with a non-empty stale user_id is not merged even if an obsolete owner exists."""
+        obsolete = Principal.objects.create(username="jaross@redhat.com", tenant=self.tenant, user_id="54181241")
+        principal = Principal.objects.create(username="jdross@redhat.com", tenant=self.tenant, user_id="99999999")
+        user = User()
+        user.username = "jdross@redhat.com"
+        user.user_id = "54181241"
+        user.org_id = self.tenant.org_id
+
+        with patch.object(tenant_service.logger, "warning") as mock_warning:
+            result = _ensure_principal_with_user_id_in_tenant(user, self.tenant)
+        self.assertIsNone(result)
+
+        mock_warning.assert_called_once()
+        principal.refresh_from_db()
+        self.assertEqual(principal.user_id, "99999999")
+        self.assertTrue(Principal.objects.filter(pk=obsolete.pk).exists())
 
     def test_ensure_principal_upsert_integrity_error_creates_survivor_when_missing(self):
         """upsert IntegrityError path creates survivor principal when insert fails on user_id uniqueness."""
