@@ -67,12 +67,12 @@ Default limit: 10. Max limit: 1000.
 ### v2 offset: `V2ResultsSetPagination`
 Same envelope as v1. Adds `limit=-1` to disable pagination (returns all results).
 
-### v2 cursor: `V2CursorPagination`
+### v2 cursor: `V2CursorPagination` / `RoleV2CursorPagination`
 Response envelope (no `count`, no `first`/`last`):
 ```json
 {"meta": {"limit": L}, "links": {"next": "...", "previous": "..."}, "data": [...]}
 ```
-Ordering uses dot-notation field mapping (e.g., `group.name`, `role.modified`). Each model type has its own `FIELD_MAPPING` dict. Invalid `order_by` values raise `ValidationError` with the list of valid fields.
+Each cursor paginator has its own `FIELD_MAPPING` dict. Role bindings use dot-notation field mapping (e.g., `role.name`, `group.modified`) for cross-relation ordering. Roles use plain field names (`name`, `last_modified`). Invalid `order_by` values raise `ValidationError` with the list of valid fields.
 
 ### v2 endpoint matrix
 
@@ -92,9 +92,10 @@ Ordering uses dot-notation field mapping (e.g., `group.name`, `role.modified`). 
 - **Workspaces** -- Console UI loads the full workspace list on the main page. Dataset is bounded (~3000/org). `WorkspacePagination` raises `max_limit` to 3000 (see `management/workspace/view.py`).
 - **Principals** -- Smaller tenant-scoped list with simple `order_by` on `username`. Inherits the default `V2ResultsSetPagination` from `BaseV2ViewSet`.
 
-**Cursor** (`V2CursorPagination`) is used for large, growing datasets:
+**Cursor** (`V2CursorPagination` / `RoleV2CursorPagination`) is used for large, growing datasets:
 
-- **Roles and role-bindings** -- Avoids expensive `COUNT(*)` queries. Provides stable iteration under concurrent writes. Supports cross-relation `order_by` via dot notation.
+- **Role bindings** -- Avoids expensive `COUNT(*)` queries. Provides stable iteration under concurrent writes. Supports cross-relation `order_by` via dot notation (e.g., `role.name`, `group.modified`).
+- **Roles** -- Same cursor benefits (`RoleV2CursorPagination`). Uses plain field names (`name`, `last_modified`) since roles are queried directly, not across relations.
 
 **Workspace cursor unification is not recommended.** Cursor pagination would remove `count`/`last` links and complicate the Console "fetch all workspaces" flow. The bounded workspace dataset does not justify the client-experience cost.
 
@@ -109,10 +110,12 @@ Avoid `limit=-1` on large datasets (roles, role-bindings). Acceptable for bounde
 
 ### `order_by` conventions
 
-| Style | `order_by` format | Example |
-|-------|-------------------|---------|
-| Offset (workspaces, principals) | Simple field names; prefix `-` for descending | `name`, `-modified`, `username` |
-| Cursor (roles, role-bindings) | Dot notation required | `role.name`, `group.modified`, `user.username` |
+| Endpoint | `order_by` format | Valid values |
+|----------|-------------------|-------------|
+| Workspaces (offset) | Simple field names; prefix `-` for descending | `name`, `-name`, `created`, `-created`, `modified`, `-modified`, `type`, `-type` |
+| Principals (offset) | Simple field names; prefix `-` for descending | `username`, `-username` |
+| Roles (cursor) | Simple field names; prefix `-` for descending | `name`, `-name`, `last_modified`, `-last_modified` |
+| Role bindings (cursor) | Dot notation for cross-relation fields; prefix `-` for descending | `role.name`, `-role.name`, `role.modified`, `-role.modified`, `role.created`, `-role.created` |
 
 ## Serializer Conventions
 
