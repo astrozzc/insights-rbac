@@ -72,6 +72,46 @@ class OcmRoleScopeHelperTests(IdentityRequest):
         role = RoleV2.objects.create(name="custom", description="", tenant=self.tenant)
         self.assertFalse(is_ocm_v2_role(role))
 
+    def test_is_ocm_v2_role_false_when_v1_source_has_no_ext_relation(self):
+        """Exercises the getattr chain — v1_source exists but ext_relation is absent."""
+        from api.models import Tenant
+
+        public_tenant = Tenant.objects.get(tenant_name="public")
+        v1_role = Role.objects.create(
+            name="plain system role", system=True, tenant=public_tenant, description="no ext relation"
+        )
+        v2_role, _ = SeededRoleV2.objects.update_or_create(
+            uuid=v1_role.uuid,
+            defaults={
+                "name": "plain system role",
+                "description": "no ext relation",
+                "tenant": public_tenant,
+                "v1_source": v1_role,
+            },
+        )
+        self.assertFalse(is_ocm_v2_role(v2_role))
+
+    def test_is_ocm_v2_role_false_for_different_ext_tenant(self):
+        """Role with ext_relation from a non-OCM external tenant is not OCM."""
+        from api.models import Tenant
+
+        public_tenant = Tenant.objects.get(tenant_name="public")
+        other_ext_tenant, _ = ExtTenant.objects.get_or_create(name="other-vendor")
+        v1_role = Role.objects.create(
+            name="other ext role", system=True, tenant=public_tenant, description="other ext"
+        )
+        ExtRoleRelation.objects.create(ext_id="otherExtId", ext_tenant=other_ext_tenant, role=v1_role)
+        v2_role, _ = SeededRoleV2.objects.update_or_create(
+            uuid=v1_role.uuid,
+            defaults={
+                "name": "other ext role",
+                "description": "other ext",
+                "tenant": public_tenant,
+                "v1_source": v1_role,
+            },
+        )
+        self.assertFalse(is_ocm_v2_role(v2_role))
+
     def test_ocm_roles_allowed_only_for_default_workspace(self):
         bootstrap_result = bootstrap_tenant_for_v2_test(self.tenant)
         standard_ws = Workspace.objects.create(
@@ -180,6 +220,21 @@ class OcmRoleV2ListTests(IdentityRequest):
         self.assertNotIn(ocm_perm_role.name, names)
         self.assertIn(self.non_ocm_role.name, names)
 
+    @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=["cost-management", "ocm"])
+    def test_list_hides_ocm_role_with_multiple_excluded_apps(self):
+        """OCM roles hidden when 'ocm' is one of several excluded apps."""
+        v2_role_excluded_application_permission_ids_cache.invalidate()
+        ocm_perm_role = create_ocm_seeded_role("OCM Cluster Admin", with_permission=True)
+        names = set(self.service.list({}).values_list("name", flat=True))
+        self.assertNotIn(ocm_perm_role.name, names)
+
+    @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=[])
+    def test_list_includes_ocm_role_when_resource_type_workspace_no_id(self):
+        """OCM roles visible when listing for resource_type=workspace without a specific ID."""
+        v2_role_excluded_application_permission_ids_cache.invalidate()
+        names = set(self.service.list({"resource_type": "workspace"}).values_list("name", flat=True))
+        self.assertIn(self.ocm_role.name, names)
+
 
 @override_settings(ATOMIC_RETRY_DISABLED=True, V2_MIGRATION_APP_EXCLUDE_LIST=[])
 class OcmRoleBindingValidationTests(IdentityRequest):
@@ -287,3 +342,14 @@ class OcmRoleBindingValidationTests(IdentityRequest):
             )
         self.assertIn("OCM roles can only be assigned at the Default Workspace", str(ctx.exception))
         self.assertEqual(self._bound_role_uuids("workspace", str(self.standard_workspace.id)), set())
+
+    def test_rejects_ocm_role_on_arbitrary_resource_type(self):
+        """OCM check fires for non-workspace/non-tenant resource types too."""
+        with self.assertRaises((InvalidFieldError, Exception)):
+            self.service.update_role_bindings_for_subject(
+                resource_type="custom_resource",
+                resource_id="arbitrary-id",
+                subject_type="group",
+                subject_id=str(self.group.uuid),
+                role_ids=[str(self.ocm_role.uuid)],
+            )

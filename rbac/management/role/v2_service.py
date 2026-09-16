@@ -266,7 +266,17 @@ class RoleV2Service:
             raise RoleDatabaseError()
 
     def list(self, params: dict) -> QuerySet:
-        """Get a list of roles for the tenant, including seeded roles from the public tenant."""
+        """Get a list of roles for the tenant, including seeded roles from the public tenant.
+
+        OCM (OpenCluster Manager) visibility rules:
+        - When ``resource_type`` is absent, OCM external roles are excluded
+          from the listing so that callers without a workspace context never
+          see roles they cannot bind.
+        - When ``resource_type="workspace"`` with the default workspace's
+          ``resource_id``, OCM roles are included.
+        - For any other workspace (standard or root) or for ``resource_type="tenant"``,
+          OCM roles are excluded via ``_filter_by_resource_type``.
+        """
         fields = params.get("fields")
         queryset = RoleV2.objects.for_tenant(self.tenant).assignable().excluding_out_of_scope_v2_roles()
         if fields:
@@ -308,6 +318,9 @@ class RoleV2Service:
 
         Uses DB-level filtering with cached Permission-ID-to-Scope mappings to
         avoid loading all roles and their permissions into Python memory.
+
+        OCM external roles are additionally excluded unless the target is the
+        tenant's default workspace (see ``ocm_roles_allowed_for_workspace_binding``).
         """
         matching_scopes = scopes_for_resource_type(resource_type)
         if not matching_scopes:
