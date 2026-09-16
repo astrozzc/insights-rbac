@@ -316,8 +316,12 @@ class RoleBindingService:
         for resource_type, resource_id in {(r.resource_type, r.resource_id) for r in requests}:
             self._validate_resource(resource_type, resource_id)
 
+        scope_groups: dict[tuple[str, str], dict[str, RoleV2]] = {}
         for req in requests:
-            self._validate_role_scopes([roles_by_uuid[req.role_id]], req.resource_type, req.resource_id)
+            key = (req.resource_type, req.resource_id)
+            scope_groups.setdefault(key, {})[req.role_id] = roles_by_uuid[req.role_id]
+        for (resource_type, resource_id), grouped in scope_groups.items():
+            self._validate_role_scopes(list(grouped.values()), resource_type, resource_id)
 
         access_groups = self._group_by_subject_resource(requests, roles_by_uuid)
         all_tuples_to_add: list[RelationTuple] = []

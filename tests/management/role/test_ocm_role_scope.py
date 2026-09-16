@@ -198,7 +198,11 @@ class OcmRoleV2ListTests(IdentityRequest):
     def test_list_hides_ocm_role_with_excluded_application_permissions(self):
         v2_role_excluded_application_permission_ids_cache.invalidate()
         ocm_perm_role = create_ocm_seeded_role("OCM Cluster Editor", with_permission=True)
-        names = set(self.service.list({}).values_list("name", flat=True))
+        names = set(
+            self.service.list({"resource_type": "workspace", "resource_id": self.default_workspace.id}).values_list(
+                "name", flat=True
+            )
+        )
         self.assertNotIn(ocm_perm_role.name, names)
 
     @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=[])
@@ -225,7 +229,11 @@ class OcmRoleV2ListTests(IdentityRequest):
         """OCM roles hidden when 'ocm' is one of several excluded apps."""
         v2_role_excluded_application_permission_ids_cache.invalidate()
         ocm_perm_role = create_ocm_seeded_role("OCM Cluster Admin", with_permission=True)
-        names = set(self.service.list({}).values_list("name", flat=True))
+        names = set(
+            self.service.list({"resource_type": "workspace", "resource_id": self.default_workspace.id}).values_list(
+                "name", flat=True
+            )
+        )
         self.assertNotIn(ocm_perm_role.name, names)
 
     @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=[])
@@ -345,7 +353,10 @@ class OcmRoleBindingValidationTests(IdentityRequest):
 
     def test_rejects_ocm_role_on_arbitrary_resource_type(self):
         """OCM check fires for non-workspace/non-tenant resource types too."""
-        with self.assertRaises((InvalidFieldError, Exception)):
+        with self.assertRaisesRegex(
+            InvalidFieldError,
+            "OCM roles can only be assigned at the Default Workspace",
+        ):
             self.service.update_role_bindings_for_subject(
                 resource_type="custom_resource",
                 resource_id="arbitrary-id",
@@ -353,3 +364,7 @@ class OcmRoleBindingValidationTests(IdentityRequest):
                 subject_id=str(self.group.uuid),
                 role_ids=[str(self.ocm_role.uuid)],
             )
+        self.assertEqual(
+            self._bound_role_uuids("custom_resource", "arbitrary-id"),
+            set(),
+        )
