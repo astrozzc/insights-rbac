@@ -21,8 +21,7 @@ from typing import Optional
 from management.atomic_transactions import atomic_with_retry, run_atomic_with_retry
 from management.metric_utils import track_result_metric
 from management.permissions import AdminAccessPermission
-from management.tenant_mapping.model import TenantMapping
-from management.tenant_mapping.v2_activation import set_v2_opt_in_state
+from management.tenant_mapping.v2_activation import is_v2_opted_in, set_v2_opt_in_state
 from management.tenant_mapping.v2_eligibility import OptInEligibleState, OptInIneligibleState, check_v2_eligibility
 from prometheus_client import Counter
 from rest_framework import permissions, serializers, status
@@ -119,16 +118,7 @@ class OptInViewSet(ViewSet):
     permission_classes = (_OptInPermission,)
 
     def _state_response_for(self, tenant: Tenant, headers: Optional[dict[str, str]] = None):
-        tenant_mapping = TenantMapping.objects.filter(tenant=tenant).first()
-
-        if headers is None:
-            headers = {}
-
-        # A non-bootstrapped tenant cannot be opted into V2.
-        if tenant_mapping is None:
-            return Response({"v2_opted_in": False}, headers=headers)
-
-        return Response({"v2_opted_in": tenant_mapping.v2_opted_in_at is not None}, headers=headers)
+        return Response({"v2_opted_in": is_v2_opted_in(tenant)}, headers=headers)
 
     def _format_eligibility_data(self, eligibility: OptInEligibleState | OptInIneligibleState):
         if isinstance(eligibility, OptInEligibleState):
