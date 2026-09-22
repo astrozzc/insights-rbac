@@ -115,7 +115,7 @@ Avoid `limit=-1` on large datasets (roles, role-bindings). Acceptable for bounde
 | Workspaces (offset) | Simple field names; prefix `-` for descending | `name`, `-name`, `created`, `-created`, `modified`, `-modified`, `type`, `-type` |
 | Principals (offset) | Simple field names; prefix `-` for descending | `username`, `-username` |
 | Roles (cursor) | Simple field names; prefix `-` for descending | `name`, `-name`, `last_modified`, `-last_modified` |
-| Role bindings (cursor) | Dot notation for cross-relation fields; prefix `-` for descending | `role.name`, `-role.name`, `role.modified`, `-role.modified`, `role.created`, `-role.created` |
+| Role bindings (cursor) | Dot notation for cross-relation fields; prefix `-` for descending | `role.id`, `-role.id`, `role.name`, `-role.name`, `role.modified`, `-role.modified`, `role.created`, `-role.created`, `group.modified`, `-group.modified` |
 
 ## Serializer Conventions
 
