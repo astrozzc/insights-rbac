@@ -1,0 +1,23 @@
+# Default identities loaded by make docker-local-full-up.
+#
+# V1 and V2 use the same persisted RBAC user model; the API version is selected
+# by the request path. The usernames make the intended test identity explicit.
+version: 1
+tenants:
+  - org_id: local-full-stack
+    account_id: "10001"
+    bootstrap: true
+
+    users:
+      - username: local-v1-org-admin
+        user_id: local-v1-org-admin-10001
+        admin: true
+      - username: local-v1-non-org-admin
+        user_id: local-v1-non-org-admin-10001
+        admin: false
+      - username: local-v2-org-admin
+        user_id: local-v2-org-admin-10001
+        admin: true
+      - username: local-v2-non-admin
+        user_id: local-v2-non-admin-10001
+        admin: false

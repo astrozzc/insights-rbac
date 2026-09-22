@@ -15,8 +15,9 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-"""InventoryReplicator which writes to the Inventory API."""
+"""RelationReplicator which writes to the Relations API."""
 
+import json
 import logging
 from typing import Optional
 
@@ -25,21 +26,22 @@ from django.conf import settings
 from google.protobuf import json_format
 from google.rpc import error_details_pb2
 from grpc_status import rpc_status
-from kessel.inventory.v1beta2 import (
-    acquire_lock_request_pb2,
-    create_tuples_request_pb2,
-    delete_tuples_request_pb2,
-    read_tuples_request_pb2,
-    relation_subject_filter_pb2,
-    relation_tuple_filter_pb2,
-    request_pagination_pb2,
-    tuple_service_pb2_grpc,
+from internal.jwt_utils import JWTManager, JWTProvider
+from kessel.relations.v1beta1 import common_pb2, relation_tuples_pb2
+from kessel.relations.v1beta1 import relation_tuples_pb2_grpc
+from management.cache import JWTCacheOptimized
+from management.relation_replicator.relation_replicator import (
+    RelationReplicator,
+    ReplicationEvent,
 )
-from management.inventory_replicator.inventory_replicator import InventoryReplicator, ReplicationEvent
-from management.inventory_replicator.types import RelationTuple
-from management.utils import create_client_channel_inventory, get_inventory_auth_metadata
+from management.utils import create_client_channel_relation
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
+
+# Initialize JWT manager for token handling (using optimized cache for Kafka consumer)
+jwt_cache = JWTCacheOptimized()
+jwt_provider = JWTProvider()
+jwt_manager = JWTManager(jwt_provider, jwt_cache)
 
 
 def execute_grpc_call(operation_name, grpc_callable, fencing_check=None, log_context=None):
@@ -68,7 +70,7 @@ def execute_grpc_call(operation_name, grpc_callable, fencing_check=None, log_con
                 f"Invalid fencing token during {operation_name} - partition reassigned. "
                 f"Lock ID: {fencing_check.lock_id if fencing_check else 'N/A'}, "
                 f"Token: {fencing_check.lock_token if fencing_check else 'N/A'}. "
-                f"Inventory API error: code={error.code}, reason={error.reason}, message={error.message}"
+                f"Relations API error: code={error.code}, reason={error.reason}, message={error.message}"
             )
         else:
             # Build error message with context
@@ -82,15 +84,15 @@ def execute_grpc_call(operation_name, grpc_callable, fencing_check=None, log_con
         raise
 
 
-class InventoryApiReplicator(InventoryReplicator):
-    """Replicates relations via Inventory API over gRPC."""
+class RelationsApiReplicator(RelationReplicator):
+    """Replicates relations via the Relations API over gRPC."""
 
     def replicate(self, event: ReplicationEvent):
-        """Replicate the given event to Kessel Inventory via the gRPC API."""
+        """Replicate the given event to Kessel Relations via the gRPC API."""
         self.write_relationships(event.add)
 
     def acquire_lock(self, lock_id: str) -> str:
-        """Acquire a lock token from the Inventory API.
+        """Acquire a lock token from the Relations API.
 
         Args:
             lock_id: Unique identifier for the lock (format: "consumer-group/partition")
@@ -101,12 +103,14 @@ class InventoryApiReplicator(InventoryReplicator):
         Raises:
             grpc.RpcError: If the lock acquisition fails
         """
-        metadata = get_inventory_auth_metadata()
+        # Get JWT token for authentication
+        token = jwt_manager.get_jwt_from_redis()
+        metadata = [("authorization", f"Bearer {token}")] if token else []
 
-        with create_client_channel_inventory(settings.INVENTORY_API_SERVER) as channel:
-            stub = tuple_service_pb2_grpc.KesselTupleServiceStub(channel)
+        with create_client_channel_relation(settings.RELATION_API_SERVER) as channel:
+            stub = relation_tuples_pb2_grpc.KesselTupleServiceStub(channel)
 
-            request = acquire_lock_request_pb2.AcquireLockRequest(lock_id=lock_id)
+            request = relation_tuples_pb2.AcquireLockRequest(lock_id=lock_id)
 
             response = execute_grpc_call(
                 operation_name=f"acquire lock token for {lock_id}",
@@ -119,7 +123,7 @@ class InventoryApiReplicator(InventoryReplicator):
             return response.lock_token
 
     def write_relationships(self, relationships, fencing_check=None):
-        """Write relationships to the Inventory API.
+        """Write relationships to the Relations API.
 
         Args:
             relationships: List of relationship tuples to create
@@ -131,27 +135,26 @@ class InventoryApiReplicator(InventoryReplicator):
         Raises:
             grpc.RpcError: If the API call fails (including FAILED_PRECONDITION for invalid fencing token)
         """
-        metadata = get_inventory_auth_metadata()
+        # Get JWT token for authentication
+        token = jwt_manager.get_jwt_from_redis()
+        metadata = [("authorization", f"Bearer {token}")] if token else []
 
-        with create_client_channel_inventory(settings.INVENTORY_API_SERVER) as channel:
-            stub = tuple_service_pb2_grpc.KesselTupleServiceStub(channel)
+        with create_client_channel_relation(settings.RELATION_API_SERVER) as channel:
+            stub = relation_tuples_pb2_grpc.KesselTupleServiceStub(channel)
 
             # Build request with optional fencing check
             request_kwargs = {
                 "upsert": True,
-                "tuples": [
-                    relationship.as_message() if isinstance(relationship, RelationTuple) else relationship
-                    for relationship in relationships
-                ],
+                "tuples": relationships,
             }
 
             if fencing_check is not None:
                 request_kwargs["fencing_check"] = fencing_check
 
-            request = create_tuples_request_pb2.CreateTuplesRequest(**request_kwargs)
+            request = relation_tuples_pb2.CreateTuplesRequest(**request_kwargs)
 
             return execute_grpc_call(
-                operation_name="write relationships to the inventory API server",
+                operation_name="write relationships to the relation API server",
                 grpc_callable=lambda: stub.CreateTuples(request, metadata=metadata),
                 fencing_check=fencing_check,
                 log_context={"relationships": relationships},
@@ -182,19 +185,23 @@ class InventoryApiReplicator(InventoryReplicator):
                 {"consistency_token": type("obj", (object,), {"token": None})()},
             )()
 
-        with create_client_channel_inventory(settings.INVENTORY_API_SERVER) as channel:
-            stub = tuple_service_pb2_grpc.KesselTupleServiceStub(channel)
+        # Get JWT token for authentication
+        token = jwt_manager.get_jwt_from_redis()
+        metadata = [("authorization", f"Bearer {token}")] if token else []
+
+        with create_client_channel_relation(settings.RELATION_API_SERVER) as channel:
+            stub = relation_tuples_pb2_grpc.KesselTupleServiceStub(channel)
 
             # Delete each relationship individually using filters
             responses = []
             for relationship in relationships:
                 # Create a filter that matches this specific relationship
-                relation_filter = relation_tuple_filter_pb2.RelationTupleFilter(
+                relation_filter = relation_tuples_pb2.RelationTupleFilter(
                     resource_namespace=relationship.resource.type.namespace,
                     resource_type=relationship.resource.type.name,
                     resource_id=relationship.resource.id,
                     relation=relationship.relation,
-                    subject_filter=relation_subject_filter_pb2.RelationSubjectFilter(
+                    subject_filter=relation_tuples_pb2.SubjectFilter(
                         subject_namespace=relationship.subject.subject.type.namespace,
                         subject_type=relationship.subject.subject.type.name,
                         subject_id=relationship.subject.subject.id,
@@ -210,12 +217,11 @@ class InventoryApiReplicator(InventoryReplicator):
                 if fencing_check is not None:
                     request_kwargs["fencing_check"] = fencing_check
 
-                request = delete_tuples_request_pb2.DeleteTuplesRequest(**request_kwargs)
+                request = relation_tuples_pb2.DeleteTuplesRequest(**request_kwargs)
 
-                # Fetch metadata per-call: a long-running batch could otherwise outlast the token.
                 response = execute_grpc_call(
-                    operation_name="delete relationship from the Inventory API server",
-                    grpc_callable=lambda req=request: stub.DeleteTuples(req, metadata=get_inventory_auth_metadata()),
+                    operation_name="delete relationship from the relation API server",
+                    grpc_callable=lambda req=request: stub.DeleteTuples(req, metadata=metadata),
                     fencing_check=fencing_check,
                     log_context={"relationship": relationship},
                 )
@@ -237,7 +243,7 @@ class InventoryApiReplicator(InventoryReplicator):
         pagination_limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
     ) -> list[dict]:
-        """Read tuples from the Inventory API.
+        """Read tuples from the Relations API.
 
         Args:
             resource_type: Type of the resource (e.g., "tenant", "workspace", "role_binding", "role")
@@ -268,18 +274,20 @@ class InventoryApiReplicator(InventoryReplicator):
         if subject_namespace is None:
             subject_namespace = "rbac" if subject_type != "" else ""
 
-        metadata = get_inventory_auth_metadata()
+        # Get JWT token for authentication
+        token = jwt_manager.get_jwt_from_redis()
+        metadata = [("authorization", f"Bearer {token}")] if token else []
 
-        with create_client_channel_inventory(settings.INVENTORY_API_SERVER) as channel:
-            stub = tuple_service_pb2_grpc.KesselTupleServiceStub(channel)
+        with create_client_channel_relation(settings.RELATION_API_SERVER) as channel:
+            stub = relation_tuples_pb2_grpc.KesselTupleServiceStub(channel)
 
-            request = read_tuples_request_pb2.ReadTuplesRequest(
-                filter=relation_tuple_filter_pb2.RelationTupleFilter(
+            request = relation_tuples_pb2.ReadTuplesRequest(
+                filter=relation_tuples_pb2.RelationTupleFilter(
                     resource_namespace=resource_namespace,
                     resource_type=resource_type,
                     resource_id=resource_id,
                     relation=relation,
-                    subject_filter=relation_subject_filter_pb2.RelationSubjectFilter(
+                    subject_filter=relation_tuples_pb2.SubjectFilter(
                         subject_namespace=subject_namespace,
                         subject_type=subject_type,
                         subject_id=subject_id,
@@ -287,16 +295,14 @@ class InventoryApiReplicator(InventoryReplicator):
                     ),
                 ),
                 pagination=(
-                    request_pagination_pb2.RequestPagination(
-                        limit=pagination_limit, continuation_token=continuation_token
-                    )
+                    common_pb2.RequestPagination(limit=pagination_limit, continuation_token=continuation_token)
                     if ((pagination_limit is not None) or (continuation_token is not None))
                     else None
                 ),
             )
 
             responses = execute_grpc_call(
-                operation_name="read tuples from the Inventory API server",
+                operation_name="read tuples from the relation API server",
                 grpc_callable=lambda: stub.ReadTuples(request, metadata=metadata),
                 fencing_check=None,
                 log_context={
@@ -335,6 +341,6 @@ class GRPCError:
                 info = error_details_pb2.ErrorInfo()
                 detail.Unpack(info)
                 self.reason = info.reason
-                self.metadata = dict(info.metadata)
+                self.metadata = json.loads(str(info.metadata).replace("'", '"'))
         except Exception as e:
             logger.debug(f"Could not extract error details: {e}")

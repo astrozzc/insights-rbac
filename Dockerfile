@@ -105,7 +105,10 @@ USER ${USER_ID}:${GROUP_ID}
 
 
 # create the static files
+# DJANGO_SECRET_KEY is required at import time (non-DEBUG mode) but not used
+# by collectstatic itself; a throwaway value is safe here.
 RUN \
+    DJANGO_SECRET_KEY=build-only-placeholder \
     python rbac/manage.py collectstatic --noinput && \
     # Remove the app.log file created during collectstatic.
     # The application will create a new one in /tmp at runtime.

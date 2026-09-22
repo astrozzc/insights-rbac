@@ -20,12 +20,7 @@ import dataclasses
 import re
 from typing import Any, ClassVar, Optional
 
-from kessel.inventory.v1beta2 import (
-    relation_object_reference_pb2,
-    relation_object_type_pb2,
-    relation_subject_reference_pb2,
-    relationship_pb2,
-)
+from kessel.relations.v1beta1 import common_pb2
 
 
 def _validate_required_str(field: str, value: object):
@@ -157,7 +152,7 @@ class RelationTuple:
         )
 
     @classmethod
-    def from_message(cls, relationship: relationship_pb2.Relationship) -> "RelationTuple":
+    def from_message(cls, relationship: common_pb2.Relationship) -> "RelationTuple":
         """Create a RelationTuple from a protobuf Relationship message."""
 
         def as_optional(value: str) -> Optional[str]:
@@ -184,20 +179,20 @@ class RelationTuple:
             ),
         )
 
-    def as_message(self) -> relationship_pb2.Relationship:
+    def as_message(self) -> common_pb2.Relationship:
         """Convert to a protobuf Relationship message for replication."""
-        return relationship_pb2.Relationship(
-            resource=relation_object_reference_pb2.RelationObjectReference(
-                type=relation_object_type_pb2.RelationObjectType(
+        return common_pb2.Relationship(
+            resource=common_pb2.ObjectReference(
+                type=common_pb2.ObjectType(
                     namespace=self.resource.type.namespace,
                     name=self.resource.type.name,
                 ),
                 id=self.resource.id,
             ),
             relation=self.relation,
-            subject=relation_subject_reference_pb2.RelationSubjectReference(
-                subject=relation_object_reference_pb2.RelationObjectReference(
-                    type=relation_object_type_pb2.RelationObjectType(
+            subject=common_pb2.SubjectReference(
+                subject=common_pb2.ObjectReference(
+                    type=common_pb2.ObjectType(
                         namespace=self.subject.subject.type.namespace,
                         name=self.subject.subject.type.name,
                     ),
@@ -238,7 +233,7 @@ class RelationTuple:
         }
 
     @classmethod
-    def validate_message(cls, message: relationship_pb2.Relationship):
+    def validate_message(cls, message: common_pb2.Relationship):
         """Check that the provided Relationship represents a valid tuple."""
         parsed = RelationTuple.from_message(message)
         assert parsed.as_message() == message

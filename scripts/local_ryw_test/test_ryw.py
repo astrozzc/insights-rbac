@@ -15,6 +15,7 @@ Usage:
 import argparse
 import base64
 import json
+import os
 import select
 import sys
 import time
@@ -25,16 +26,27 @@ import psycopg2.extensions
 import requests
 
 DEFAULT_API_URL = "http://localhost:8000"
+DEFAULT_API_PATH_PREFIX = "/api"
 DEFAULT_DB_HOST = "localhost"
 DEFAULT_DB_PORT = 15432
 DEFAULT_DB_NAME = "postgres"
 DEFAULT_DB_USER = "postgres"
 DEFAULT_DB_PASSWORD = "postgres"
+DEFAULT_ORG_ID = os.environ.get("RYW_ORG_ID", "11111")
+DEFAULT_ACCOUNT_ID = os.environ.get("RYW_ACCOUNT_ID", "10001")
+DEFAULT_USERNAME = os.environ.get("RYW_USERNAME", "user_dev")
+DEFAULT_USER_ID = os.environ.get("RYW_USER_ID", "51736777")
+DEFAULT_IS_ORG_ADMIN = os.environ.get("RYW_IS_ORG_ADMIN", "true").lower() in {"1", "true", "yes", "on"}
 
 RYW_CHANNEL = "READ_YOUR_WRITES_CHANNEL"
 
 
-def make_identity_header(org_id, account_id="12345678", username="test-ryw-user"):
+def make_identity_header(
+    org_id,
+    account_id=DEFAULT_ACCOUNT_ID,
+    username=DEFAULT_USERNAME,
+    user_id=DEFAULT_USER_ID,
+):
     """Build a base64-encoded x-rh-identity header."""
     identity = {
         "identity": {
@@ -44,21 +56,26 @@ def make_identity_header(org_id, account_id="12345678", username="test-ryw-user"
             "user": {
                 "username": username,
                 "email": f"{username}@example.com",
-                "is_org_admin": True,
-                "user_id": "1111111",
+                "is_org_admin": DEFAULT_IS_ORG_ADMIN,
+                "user_id": user_id,
             },
         }
     }
     return base64.b64encode(json.dumps(identity).encode()).decode()
 
 
-def wait_for_api_ready(api_url, timeout=30):
+def workspace_collection_url(api_url, api_path_prefix):
+    prefix = f"/{api_path_prefix.strip('/')}" if api_path_prefix.strip("/") else ""
+    return f"{api_url.rstrip('/')}{prefix}/v2/workspaces/"
+
+
+def wait_for_api_ready(api_url, api_path_prefix, timeout=30):
     """Wait for the API server to be ready."""
     print(f"  Waiting for API server at {api_url}...")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            r = requests.get(f"{api_url}/api/v2/workspaces/", timeout=2)
+            r = requests.get(workspace_collection_url(api_url, api_path_prefix), timeout=2)
             if r.status_code in (200, 401, 403):
                 print(f"  API server ready (status={r.status_code})")
                 return True
@@ -113,7 +130,7 @@ def listen_for_notify(host, port, dbname, user, password, channel, timeout=30):
         conn.close()
 
 
-def create_workspace_via_api(api_url, org_id, workspace_name):
+def create_workspace_via_api(api_url, api_path_prefix, org_id, workspace_name):
     """Create a workspace via the v2 API. Returns (response, elapsed_seconds)."""
     identity = make_identity_header(org_id)
     headers = {
@@ -123,29 +140,45 @@ def create_workspace_via_api(api_url, org_id, workspace_name):
     payload = {"name": workspace_name}
 
     started = time.monotonic()
-    response = requests.post(f"{api_url}/api/v2/workspaces/", json=payload, headers=headers, timeout=60)
+    response = requests.post(
+        workspace_collection_url(api_url, api_path_prefix), json=payload, headers=headers, timeout=60
+    )
     elapsed = time.monotonic() - started
     return response, elapsed
 
 
-def delete_workspace_via_api(api_url, org_id, workspace_id):
+def delete_workspace_via_api(api_url, api_path_prefix, org_id, workspace_id):
     """Delete a workspace via the v2 API. Returns (response, elapsed_seconds)."""
     identity = make_identity_header(org_id)
     headers = {"x-rh-identity": identity}
 
     started = time.monotonic()
-    response = requests.delete(f"{api_url}/api/v2/workspaces/{workspace_id}/", headers=headers, timeout=60)
+    workspace_url = f"{workspace_collection_url(api_url, api_path_prefix)}{workspace_id}/"
+    response = requests.delete(workspace_url, headers=headers, timeout=60)
     elapsed = time.monotonic() - started
     return response, elapsed
 
 
-def run_test(api_url, db_host, db_port, db_name, db_user, db_password, test_ryw_listener=False, num_workspaces=3):
+def run_test(
+    api_url,
+    api_path_prefix,
+    db_host,
+    db_port,
+    db_name,
+    db_user,
+    db_password,
+    test_ryw_listener=False,
+    num_workspaces=3,
+):
     """Run the full RYW test."""
-    org_id = f"ryw-test-{uuid.uuid4().hex[:8]}"
+    org_id = DEFAULT_ORG_ID
 
     print("=" * 60)
     print("  Read-Your-Writes (RYW) Pipeline Test")
     print(f"  Creating {num_workspaces} workspace(s) for org '{org_id}'")
+    print(
+        f"  Identity: username={DEFAULT_USERNAME} user_id={DEFAULT_USER_ID} " f"account_id={DEFAULT_ACCOUNT_ID} API=V2"
+    )
     print("=" * 60)
     print()
 
@@ -155,7 +188,7 @@ def run_test(api_url, db_host, db_port, db_name, db_user, db_password, test_ryw_
         return False, None, []
     print(f"  PostgreSQL OK ({db_host}:{db_port})")
 
-    if not wait_for_api_ready(api_url):
+    if not wait_for_api_ready(api_url, api_path_prefix):
         return False, None, []
 
     # Step 2: Optionally start a parallel LISTEN to observe NOTIFYs independently
@@ -209,9 +242,9 @@ def run_test(api_url, db_host, db_port, db_name, db_user, db_password, test_ryw_
     for i in range(num_workspaces):
         workspace_name = f"ryw-test-ws-{i + 1}-{uuid.uuid4().hex[:8]}"
         print(f"\n  --- Workspace {i + 1}/{num_workspaces}: '{workspace_name}' ---")
-        print(f"  POST {api_url}/api/v2/workspaces/")
+        print(f"  POST {workspace_collection_url(api_url, api_path_prefix)}")
 
-        response, api_elapsed = create_workspace_via_api(api_url, org_id, workspace_name)
+        response, api_elapsed = create_workspace_via_api(api_url, api_path_prefix, org_id, workspace_name)
 
         print(f"  Status: {response.status_code}")
         print(f"  API response time: {api_elapsed:.3f}s")
@@ -275,7 +308,7 @@ def print_summary_table(label, results):
         print(f"  {i + 1:<4} {op:<8} {status:<8} {r['elapsed']:>7.3f}s  {wid}")
 
 
-def run_phase2(api_url, org_id, init_results, db_host, db_port, db_name, db_user, db_password):
+def run_phase2(api_url, api_path_prefix, org_id, init_results, db_host, db_port, db_name, db_user, db_password):
     """Phase 2: create 2 new workspaces, delete 2 from init phase."""
     print()
     print("=" * 60)
@@ -288,8 +321,8 @@ def run_phase2(api_url, org_id, init_results, db_host, db_port, db_name, db_user
     print("\n  --- Creating 2 new workspaces (phase-2) ---")
     for i in range(2):
         ws_name = f"phase-2-ws-{i + 1}-{uuid.uuid4().hex[:8]}"
-        print(f"\n  POST {api_url}/api/v2/workspaces/  name='{ws_name}'")
-        response, elapsed = create_workspace_via_api(api_url, org_id, ws_name)
+        print(f"\n  POST {workspace_collection_url(api_url, api_path_prefix)}  name='{ws_name}'")
+        response, elapsed = create_workspace_via_api(api_url, api_path_prefix, org_id, ws_name)
         print(f"  Status: {response.status_code}  Time: {elapsed:.3f}s")
         if response.status_code == 201:
             body = response.json()
@@ -306,8 +339,9 @@ def run_phase2(api_url, org_id, init_results, db_host, db_port, db_name, db_user
 
     print(f"\n  --- Deleting {len(to_delete)} workspace(s) from init phase ---")
     for r in to_delete:
-        print(f"\n  DELETE {api_url}/api/v2/workspaces/{r['id']}/  ('{r['name']}')")
-        response, elapsed = delete_workspace_via_api(api_url, org_id, r["id"])
+        workspace_url = f"{workspace_collection_url(api_url, api_path_prefix)}{r['id']}/"
+        print(f"\n  DELETE {workspace_url}  ('{r['name']}')")
+        response, elapsed = delete_workspace_via_api(api_url, api_path_prefix, org_id, r["id"])
         print(f"  Status: {response.status_code}  Time: {elapsed:.3f}s")
         ok = response.status_code == 204
         if not ok:
@@ -330,6 +364,11 @@ def run_phase2(api_url, org_id, init_results, db_host, db_port, db_name, db_user
 def main():
     parser = argparse.ArgumentParser(description="Test RYW pipeline")
     parser.add_argument("--api-url", default=DEFAULT_API_URL, help="RBAC API base URL")
+    parser.add_argument(
+        "--api-path-prefix",
+        default=DEFAULT_API_PATH_PREFIX,
+        help="RBAC API path prefix before /v2 (default: /api)",
+    )
     parser.add_argument("--db-host", default=DEFAULT_DB_HOST, help="PostgreSQL host")
     parser.add_argument("--db-port", type=int, default=DEFAULT_DB_PORT, help="PostgreSQL port")
     parser.add_argument("--db-name", default=DEFAULT_DB_NAME, help="Database name")
@@ -354,6 +393,7 @@ def main():
             saved = json.load(f)
         phase2_passed = run_phase2(
             api_url=args.api_url,
+            api_path_prefix=args.api_path_prefix,
             org_id=saved["org_id"],
             init_results=saved["results"],
             db_host=args.db_host,
@@ -366,6 +406,7 @@ def main():
 
     init_passed, org_id, init_results = run_test(
         api_url=args.api_url,
+        api_path_prefix=args.api_path_prefix,
         db_host=args.db_host,
         db_port=args.db_port,
         db_name=args.db_name,

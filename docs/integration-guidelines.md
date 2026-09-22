@@ -2,7 +2,7 @@
 
 ## External Services Overview
 
-RBAC integrates with seven external services: Kessel Relations (gRPC), Kessel Inventory (gRPC), Kafka (producer + consumer), BOP (HTTP), IT Service (HTTP), UMB (STOMP), and Redis (Celery broker + cache). All connections are configured via environment variables with local-dev bypass modes.
+RBAC integrates with six external services: Kessel Relations (gRPC), Kessel Inventory (gRPC), Kafka (producer + consumer), BOP (HTTP), IT Service (HTTP), and Redis (Celery broker + cache). All connections are configured via environment variables with local-dev bypass modes.
 
 ## 1. Kessel Relations API (gRPC) -- Relation Replication
 
@@ -38,21 +38,22 @@ Rules:
 
 ### RelationTuple Domain Type
 
-Use `RelationTuple` from `management/inventory_replicator/types.py` instead of raw protobuf messages. It validates fields on construction (non-empty strings, valid patterns, no `*` for resource IDs). Convert to protobuf with `.as_message()` or to dict with `.to_dict()`.
+Use `RelationTuple` from `management/relation_replicator/types.py` instead of raw protobuf messages. It validates fields on construction (non-empty strings, valid patterns, no `*` for resource IDs). Convert to protobuf with `.as_message()` or to dict with `.to_dict()`.
 
 ### gRPC Channel Creation
 
 Three channel factories in `management/utils.py`:
+- `create_client_channel_relation(addr)` -- Relations API (JWT auth via metadata)
 - `create_client_channel_inventory(addr)` -- Inventory API (OAuth2 credentials)
 - `create_client_channel(addr)` -- Legacy, same as relation
 
 All use insecure channels when `DEVELOPMENT=True` or `CLOWDER_ENABLED=true`, TLS otherwise. Always use as context managers.
 
-### Auth for Inventory API
+### Auth for Relations API
 
-Auth uses a `kessel.auth.OAuth2ClientCredentials` instance (`inventory_auth_credentials` in `management/utils.py`), which fetches/caches/refreshes OAuth2 tokens in-process (thread-safe, no Redis involved). Build gRPC metadata for a call via `get_inventory_auth_metadata()`, which returns `[("authorization", f"Bearer {token}")]` or `[]` if `INVENTORY_API_CLIENT_ID`/`INVENTORY_API_CLIENT_SECRET` aren't configured (e.g. local/ephemeral). Metadata is attached per-call (`stub.SomeMethod(request, metadata=metadata)`) rather than at the channel level, since `create_client_channel_inventory` uses a plaintext channel under Clowder, which can't carry gRPC channel-level call credentials.
+JWT tokens are obtained from Redis via `JWTManager` (not per-request OAuth2). The consumer uses `JWTCacheOptimized`; request-path code uses `JWTCache`. Both are in `management/cache.py`. Token is passed as gRPC metadata: `[("authorization", f"Bearer {token}")]`.
 
-Key env vars: `INVENTORY_API_SERVER` (default `localhost:9000`), `INVENTORY_API_CLIENT_ID`, `INVENTORY_API_CLIENT_SECRET`, `INVENTORY_API_TOKEN_URL`.
+Key env vars: `RELATION_API_SERVER` (default `localhost:9000`), `RELATION_API_CLIENT_ID`, `RELATION_API_CLIENT_SECRET`.
 
 ## 2. Debezium CDC / Outbox Pattern
 
@@ -136,14 +137,14 @@ Metrics: `rbac_proxy_request_processing_seconds` (histogram), `bop_request_statu
 
 Env vars: `IT_SERVICE_HOST`, `IT_SERVICE_PORT`, `IT_SERVICE_BASE_PATH`, `IT_SERVICE_PROTOCOL_SCHEME`, `IT_SERVICE_TIMEOUT_SECONDS`.
 
-## 7. UMB (Unified Message Bus) -- Principal Lifecycle Events
+## 7. Principal Cleanup via Kafka
 
-STOMP-based consumer in `management/principal/cleaner.py`. Processes principal create/update/disable events.
+Kafka-based consumer in `management/principal/cleaner.py`. Processes principal create/update/disable events from the IT-managed Kafka topic.
 
-- Controlled by `PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB` and `UMB_JOB_ENABLED` feature flags
-- Runs as a Celery beat task every 60 seconds when enabled
-- Uses `StompSpec.ACK_CLIENT_INDIVIDUAL` for per-message acknowledgment
-- Falls back to BOP-based cleanup (`clean_tenants_principals`) when UMB is disabled (runs every 7 days)
+- Controlled by `KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED` (default `True`) and `KAFKA_PRINCIPAL_CLEANUP_TOPIC`
+- Runs as a Celery beat task every 60 seconds when both the flag is enabled and a topic is configured
+- Falls back to BOP-based cleanup (`clean_tenants_principals`) approximately every 7 days (on the 7th, 14th, 21st, and 28th of each month) when Kafka cleanup is not configured
+- Failed messages are sent to a dead-letter queue topic (`KAFKA_PRINCIPAL_CLEANUP_DLQ_TOPIC`) when configured
 
 ## 8. Notifications Service
 
@@ -164,8 +165,8 @@ Broker: Redis (`CELERY_BROKER_URL`). Config namespace: `CELERY_`.
 Scheduled tasks in `rbac/rbac/celery.py`:
 - `cross_account_cleanup` -- daily at midnight
 - `run_redis_cache_health` -- every 30 seconds
-- `principal_cleanup_via_umb` -- every 60 seconds (when UMB enabled)
-- `principal_cleanup` -- every 7 days (when UMB disabled)
+- `principal_cleanup_via_kafka` -- every 60 seconds (when `KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED` and `KAFKA_PRINCIPAL_CLEANUP_TOPIC` are set)
+- `principal_cleanup` -- approximately every 7 days, on the 7th/14th/21st/28th (fallback when Kafka cleanup is not configured)
 
 Worker starts a Prometheus metrics server on Clowder's `metricsPort` (default 9000). Failure to start metrics server exits the process.
 
@@ -186,7 +187,7 @@ Env vars: `READ_YOUR_WRITES_WORKSPACE_ENABLED`, `READ_YOUR_WRITES_CHANNEL`, `REA
 | `BYPASS_BOP_VERIFICATION` | `False` | Skips BOP calls, uses local DB |
 | `IT_BYPASS_IT_CALLS` | `False` | Mocks IT service responses |
 | `MOCK_KAFKA` | `False` | Uses FakeKafkaProducer |
-| `PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB` | `False` | UMB-based principal cleanup |
+| `KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED` | `True` | Kafka-based principal cleanup (requires `KAFKA_PRINCIPAL_CLEANUP_TOPIC`) |
 | `READ_YOUR_WRITES_WORKSPACE_ENABLED` | `False` | Enables workspace create blocking |
 
 ## 12. Prometheus Metrics Conventions

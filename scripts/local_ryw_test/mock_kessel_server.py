@@ -11,19 +11,13 @@ import uuid
 from concurrent import futures
 
 import grpc
-from kessel.inventory.v1beta2 import (
-    delete_tuples_response_pb2,
-    create_tuples_response_pb2,
-    consistency_token_pb2,
-    acquire_lock_response_pb2,
-    tuple_service_pb2_grpc,
-)
+from kessel.relations.v1beta1 import common_pb2, relation_tuples_pb2, relation_tuples_pb2_grpc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [MockKessel] %(message)s")
 logger = logging.getLogger(__name__)
 
 
-class MockKesselTupleServicer(tuple_service_pb2_grpc.KesselTupleServiceServicer):
+class MockKesselTupleServicer(relation_tuples_pb2_grpc.KesselTupleServiceServicer):
     """Mock implementation that logs calls and returns success."""
 
     def __init__(self):
@@ -45,24 +39,25 @@ class MockKesselTupleServicer(tuple_service_pb2_grpc.KesselTupleServiceServicer)
                 t.subject.subject.id if t.subject.HasField("subject") else "?",
             )
         token = f"mock-token-{uuid.uuid4().hex[:8]}"
-        return create_tuples_response_pb2.CreateTuplesResponse(
-            consistency_token=consistency_token_pb2.ConsistencyToken(token=token)
-        )
+        return relation_tuples_pb2.CreateTuplesResponse(consistency_token=common_pb2.ConsistencyToken(token=token))
 
     def DeleteTuples(self, request, context):
         self.delete_count += 1
         logger.info("DeleteTuples called (total calls: %d)", self.delete_count)
         token = f"mock-token-{uuid.uuid4().hex[:8]}"
-        return delete_tuples_response_pb2.DeleteTuplesResponse(
-            consistency_token=consistency_token_pb2.ConsistencyToken(token=token)
-        )
+        return relation_tuples_pb2.DeleteTuplesResponse(consistency_token=common_pb2.ConsistencyToken(token=token))
 
     def ReadTuples(self, request, context):
         logger.info("ReadTuples called (returning empty)")
         return
         yield  # noqa: make this a generator for server-streaming
 
-    # TODO: implement ImportBulkTuples equivalent for Inventory API
+    def ImportBulkTuples(self, request_iterator, context):
+        count = 0
+        for req in request_iterator:
+            count += len(req.tuples)
+        logger.info("ImportBulkTuples called with %d total tuples", count)
+        return relation_tuples_pb2.ImportBulkTuplesResponse(num_imported=count)
 
     def AcquireLock(self, request, context):
         self.lock_count += 1
@@ -73,14 +68,14 @@ class MockKesselTupleServicer(tuple_service_pb2_grpc.KesselTupleServiceServicer)
             lock_token,
             self.lock_count,
         )
-        return acquire_lock_response_pb2.AcquireLockResponse(lock_token=lock_token)
+        return relation_tuples_pb2.AcquireLockResponse(lock_token=lock_token)
 
 
 def serve(port=50051):
     """Start the mock gRPC server."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     servicer = MockKesselTupleServicer()
-    tuple_service_pb2_grpc.add_KesselTupleServiceServicer_to_server(servicer, server)
+    relation_tuples_pb2_grpc.add_KesselTupleServiceServicer_to_server(servicer, server)
     addr = f"[::]:{port}"
     server.add_insecure_port(addr)
     server.start()

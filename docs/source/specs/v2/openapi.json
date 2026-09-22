@@ -16,9 +16,1435 @@
     },
     {
       "name": "Principals"
+    },
+    {
+      "name": "Permissions"
+    },
+    {
+      "name": "Groups"
     }
   ],
   "paths": {
+    "/groups/": {
+      "get": {
+        "operationId": "Groups_list",
+        "summary": "List groups",
+        "description": "List groups. Supports filtering by name, role membership, principal membership, and group flags. Use scope=principal to return only groups the calling user belongs to.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "description": "Filter by name (substring or glob with *)",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "uuid",
+            "in": "query",
+            "required": false,
+            "description": "Filter by group UUIDs",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/UUID"
+              }
+            },
+            "explode": false
+          },
+          {
+            "name": "username",
+            "in": "query",
+            "required": false,
+            "description": "Filter groups that contain this username as a member",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_username",
+            "in": "query",
+            "required": false,
+            "description": "Exclude groups that contain this username. Mutually exclusive with username.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "role_names",
+            "in": "query",
+            "required": false,
+            "description": "Filter groups by comma-separated role names. Use role_discriminator to control match logic.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "role_discriminator",
+            "in": "query",
+            "required": false,
+            "description": "Controls how role_names are matched: 'any' returns groups with at least one matching role; 'all' requires every role. Only used with role_names.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/RoleDiscriminator"
+                }
+              ],
+              "default": "any"
+            },
+            "explode": false
+          },
+          {
+            "name": "principals",
+            "in": "query",
+            "required": false,
+            "description": "Filter groups by comma-separated principal usernames. Returns groups that contain ALL specified principals.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "description": "Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/GroupScope"
+                }
+              ],
+              "default": "org_id"
+            },
+            "explode": false
+          },
+          {
+            "name": "system",
+            "in": "query",
+            "required": false,
+            "description": "Filter by system group flag",
+            "schema": {
+              "type": "boolean"
+            },
+            "explode": false
+          },
+          {
+            "name": "platform_default",
+            "in": "query",
+            "required": false,
+            "description": "Filter by platform default group flag",
+            "schema": {
+              "type": "boolean"
+            },
+            "explode": false
+          },
+          {
+            "name": "admin_default",
+            "in": "query",
+            "required": false,
+            "description": "Filter by admin default group flag",
+            "schema": {
+              "type": "boolean"
+            },
+            "explode": false
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "required": false,
+            "description": "Order by field (prefix - for descending). Allowed: name, modified, principal_count, role_count",
+            "schema": {
+              "type": "string",
+              "default": "name"
+            },
+            "explode": false
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Limit"
+                }
+              ],
+              "default": 10
+            },
+            "explode": false
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Offset"
+                }
+              ],
+              "default": 0
+            },
+            "explode": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Groups.GroupListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ]
+      },
+      "post": {
+        "operationId": "Groups_create",
+        "summary": "Create a group",
+        "description": "Create a group",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "The request has succeeded and a new resource has been created as a result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Groups.Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Problems.Problem400"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problems.Problem400AlreadyExists"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Groups.GroupInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/groups/{uuid}/": {
+      "get": {
+        "operationId": "Groups_retrieve",
+        "summary": "Retrieve a group",
+        "description": "Retrieve a group by UUID. Unlike V1, V2 does not embed principals or roles in the group response. Use GET /groups/{uuid}/principals/ for membership and GET /role-bindings/by-subject/?subject_type=group&subject_id={uuid} for role assignments. This is an intentional contract change to reduce payload size and support pagination on related resources.",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/UUID"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Groups.Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server cannot find the requested resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem404"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ]
+      },
+      "put": {
+        "operationId": "Groups_update",
+        "summary": "Update a group",
+        "description": "Update a group. Protected-group behavior: system groups (system=true) return 400; platform_default and admin_default groups allow name/description updates but not membership changes through this endpoint.",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/UUID"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Groups.Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server cannot find the requested resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem404"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Groups.GroupInput"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "Groups_destroy",
+        "summary": "Delete a group",
+        "description": "Delete a group. Protected-group behavior: system groups (system=true) return 400; platform_default groups return 400; admin_default groups return 400. Groups with active role bindings return 409 Conflict. Only custom (non-protected) groups with no active role bindings can be deleted.",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/UUID"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "There is no content to send for this request, but the headers may be useful."
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server cannot find the requested resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem404"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the server.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem409"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ]
+      }
+    },
+    "/groups/{uuid}/principals/": {
+      "get": {
+        "operationId": "Groups_listPrincipals",
+        "summary": "List group principals",
+        "description": "List principals who are members of this group. When principal_type is omitted it defaults to 'user', so the response contains only user principals. Set principal_type=all to get a unified Principal[] containing both users and service accounts, with the type field distinguishing them.",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/UUID"
+            }
+          },
+          {
+            "name": "principal_type",
+            "in": "query",
+            "required": false,
+            "description": "Filter by principal type: 'user' (default), 'service-account', or 'all'. When 'all', returns both users and service accounts in a unified list.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/PrincipalTypeFilter"
+                }
+              ],
+              "default": "user"
+            },
+            "explode": false
+          },
+          {
+            "name": "username",
+            "in": "query",
+            "required": false,
+            "description": "Filter by username (substring match). Applies to user principals.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "principal_username",
+            "in": "query",
+            "required": false,
+            "description": "Filter by principal username (case-insensitive substring match). Applies to both user and service-account principals.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "username_only",
+            "in": "query",
+            "required": false,
+            "description": "When true, return only usernames without enrichment from external identity services. Applies to user principals only.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          },
+          {
+            "name": "admin_only",
+            "in": "query",
+            "required": false,
+            "description": "When true, return only org admin users. Applies to user principals only.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          },
+          {
+            "name": "service_account_name",
+            "in": "query",
+            "required": false,
+            "description": "Filter service accounts by display name (substring match). Only used when principal_type is 'service-account' or 'all'.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "service_account_description",
+            "in": "query",
+            "required": false,
+            "description": "Filter service accounts by description (substring match). Only used when principal_type is 'service-account' or 'all'.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "service_account_client_ids",
+            "in": "query",
+            "required": false,
+            "description": "Check membership of specific service account client IDs (comma-separated). Incompatible with other filter parameters. Returns only the matching service accounts that are members of this group.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Limit"
+                }
+              ],
+              "default": 10
+            },
+            "explode": false
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Offset"
+                }
+              ],
+              "default": 0
+            },
+            "explode": false
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "username"
+            },
+            "explode": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Groups.PrincipalListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server cannot find the requested resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem404"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ]
+      },
+      "post": {
+        "operationId": "Groups_addPrincipals",
+        "summary": "Add principals to a group",
+        "description": "Add principals to a group. At least one of usernames or service_accounts must contain items. Protected-group behavior: system groups return 400; platform_default and admin_default groups allow adding members.",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/UUID"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Groups.Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server cannot find the requested resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem404"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Groups.AddPrincipalsInput"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "Groups_removePrincipals",
+        "summary": "Remove principals from a group in bulk",
+        "description": "Remove principals from a group in bulk. At least one of usernames or service_accounts must be provided. Note: V1 spelled this query parameter 'service-accounts'; V2 uses snake_case 'service_accounts' for consistency with the rest of the V2 contract. All specified principals must be members of the group; if any are not found, the request returns 404 and no removals are performed. Protected-group behavior: system groups return 400.",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/UUID"
+            }
+          },
+          {
+            "name": "usernames",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated usernames to remove from the group",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "service_accounts",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated service account client IDs to remove from the group",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "There is no content to send for this request, but the headers may be useful."
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server cannot find the requested resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem404"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ]
+      }
+    },
+    "/groups/{uuid}/principals/{principal_uuid}/": {
+      "delete": {
+        "operationId": "Groups_removePrincipal",
+        "summary": "Remove a principal from a group",
+        "description": "Remove a single principal from a group by principal UUID. Protected-group behavior: system groups return 400. For bulk removal, use DELETE /groups/{uuid}/principals/ with query parameters.",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/UUID"
+            }
+          },
+          {
+            "name": "principal_uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/UUID"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "There is no content to send for this request, but the headers may be useful."
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server cannot find the requested resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem404"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Groups"
+        ]
+      }
+    },
+    "/permissions/": {
+      "get": {
+        "operationId": "Permissions_list",
+        "summary": "List the permissions for a tenant",
+        "description": "List the permissions for a tenant",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Limit"
+                }
+              ],
+              "default": 10
+            },
+            "explode": false
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Offset for offset-based pagination.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Offset"
+                }
+              ],
+              "default": 0
+            },
+            "explode": false
+          },
+          {
+            "name": "application",
+            "in": "query",
+            "required": false,
+            "description": "Filter by application name. Exact match by default. You may also use a comma-separated list to match on multiple applications.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "required": false,
+            "description": "Filter permissions by the resource type (e.g. 'tenant', 'workspace'). When omitted, returns permissions from all types. You may also use a comma-separated list to match on multiple resource_types.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "required": false,
+            "description": "Filter by operation (e.g. 'read', 'create', 'delete', 'update'). You may also use a comma-separated list to match on multiple operation types. Equivalent to `verb` in the v1 API.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "permission",
+            "in": "query",
+            "required": false,
+            "description": "Filter by full permission string. Partial/contains match (e.g. 'workspace' matches 'rbac:workspace:read'), Only a single value is supported.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_globals",
+            "in": "query",
+            "required": false,
+            "description": "When true, exclude wildcard/global permissions (where application, resource_type, or operation is '*') from the results.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_roles",
+            "in": "query",
+            "required": false,
+            "description": "Exclude permissions already assigned to the given role(s). Comma-separated list of role UUIDs.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "allowed_only",
+            "in": "query",
+            "required": false,
+            "description": "When true, only return permissions belonging to applications allowed for role creation.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "description": "Control which fields are included in the response.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/FieldMask"
+                }
+              ],
+              "default": "application,resource_type,operation,permission,description,requires"
+            },
+            "explode": false
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "required": false,
+            "description": "Sort by specified field(s), prefix with '-' for descending order. Allowed fields: application, resource_type, operation, permission.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/OrderBy"
+                }
+              ],
+              "default": "permission"
+            },
+            "explode": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Permissions.PermissionListResponse"
+                },
+                "example": {
+                  "meta": {
+                    "count": 100,
+                    "limit": 10,
+                    "offset": 0
+                  },
+                  "links": {
+                    "first": "/api/rbac/v2/permissions/?limit=10&offset=0",
+                    "next": "/api/rbac/v2/permissions/?limit=10&offset=10",
+                    "previous": null,
+                    "last": "/api/rbac/v2/permissions/?limit=10&offset=90"
+                  },
+                  "data": [
+                    {
+                      "application": "rbac",
+                      "resource_type": "workspace",
+                      "operation": "read",
+                      "permission": "rbac:workspace:read",
+                      "description": "Read access to workspaces",
+                      "requires": []
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Permissions"
+        ]
+      }
+    },
+    "/permissions/options/": {
+      "get": {
+        "operationId": "Permissions_options",
+        "description": "List distinct values for a single permission field, used to populate filter options (e.g. Application, Resource type, Operation) in the UI.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Limit"
+                }
+              ],
+              "default": 10
+            },
+            "explode": false
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Offset for offset-based pagination.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Offset"
+                }
+              ],
+              "default": 0
+            },
+            "explode": false
+          },
+          {
+            "name": "field",
+            "in": "query",
+            "required": true,
+            "description": "The field to return distinct values for. One of: application, resource_type, operation, permission.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application",
+                "resource_type",
+                "operation",
+                "permission"
+              ]
+            },
+            "explode": false
+          },
+          {
+            "name": "application",
+            "in": "query",
+            "required": false,
+            "description": "Filter by application name. You may use a comma-separated list to filter on multiple applications.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "required": false,
+            "description": "Filter by resource type. You may use a comma-separated list to filter on multiple resource types.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "required": false,
+            "description": "Filter by operation. You may use a comma-separated list to filter on multiple operations.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_globals",
+            "in": "query",
+            "required": false,
+            "description": "When true, exclude wildcard/global permission options.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_roles",
+            "in": "query",
+            "required": false,
+            "description": "Exclude permissions already assigned to the given role(s). Comma-separated list of role UUIDs.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "allowed_only",
+            "in": "query",
+            "required": false,
+            "description": "When true, only return options for applications allowed for role creation.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Permissions.PermissionOptionsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Permissions"
+        ]
+      }
+    },
     "/principals/": {
       "get": {
         "operationId": "Principals_list",
@@ -2014,24 +3440,6 @@
                 }
               }
             }
-          },
-          "503": {
-            "description": "Service unavailable.",
-            "headers": {
-              "Retry-After": {
-                "required": true,
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problems.Problem503"
-                }
-              }
-            }
           }
         },
         "tags": [
@@ -2249,24 +3657,6 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problems.Problem500"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service unavailable.",
-            "headers": {
-              "Retry-After": {
-                "required": true,
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problems.Problem503"
                 }
               }
             }
@@ -2855,6 +4245,213 @@
         "type": "string",
         "description": "Field mask used by the `fields` query parameter to control which fields\nare included in the response.\n\n**Syntax:**\n- Use comma to separate multiple fields: `id,name,description`\n- Use parentheses for nested objects: `subject(id,name),resource(type)`\n\n**Examples:**\n- `id,name`\n- `subject(group.name),role(name)`"
       },
+      "GroupScope": {
+        "type": "string",
+        "enum": [
+          "org_id",
+          "principal"
+        ],
+        "description": "Group scope filter for controlling group visibility"
+      },
+      "Groups.AddPrincipalsInput": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/Groups.AddUsernamesInput"
+          },
+          {
+            "$ref": "#/components/schemas/Groups.AddServiceAccountsInput"
+          }
+        ],
+        "description": "Principals to add to a group. At least one of usernames or service_accounts must be present and non-empty; an empty object is rejected."
+      },
+      "Groups.AddServiceAccountsInput": {
+        "type": "object",
+        "required": [
+          "service_accounts"
+        ],
+        "properties": {
+          "usernames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Usernames to add."
+          },
+          "service_accounts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Service account client IDs to add. Must contain at least one item.",
+            "example": [
+              "abc-123-def"
+            ]
+          }
+        },
+        "description": "Add principals by service account client ID. usernames may also be supplied."
+      },
+      "Groups.AddUsernamesInput": {
+        "type": "object",
+        "required": [
+          "usernames"
+        ],
+        "properties": {
+          "usernames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Usernames to add. Must contain at least one item."
+          },
+          "service_accounts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Service account client IDs to add.",
+            "example": [
+              "abc-123-def"
+            ]
+          }
+        },
+        "description": "Add principals by username. service_accounts may also be supplied."
+      },
+      "Groups.Group": {
+        "type": "object",
+        "required": [
+          "uuid",
+          "name",
+          "principal_count",
+          "role_count",
+          "created",
+          "modified",
+          "system",
+          "platform_default",
+          "admin_default"
+        ],
+        "properties": {
+          "uuid": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UUID"
+              }
+            ],
+            "description": "UUID that uniquely identifies the group"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150,
+            "description": "Name of the group"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Description of the group"
+          },
+          "principal_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Number of user principals in the group (does not count service accounts, matching V1 principalCount semantics)"
+          },
+          "role_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0,
+            "description": "Number of roles assigned to this group via role bindings"
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time",
+            "description": "2019-01-21T17:32:28Z"
+          },
+          "modified": {
+            "type": "string",
+            "format": "date-time",
+            "description": "2019-01-21T17:32:28Z"
+          },
+          "system": {
+            "type": "boolean",
+            "description": "Whether this is a system-managed group"
+          },
+          "platform_default": {
+            "type": "boolean",
+            "description": "Whether this is the platform default group"
+          },
+          "admin_default": {
+            "type": "boolean",
+            "description": "Whether this is the admin default group"
+          }
+        }
+      },
+      "Groups.GroupInput": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150,
+            "description": "Name of the group"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Description of the group"
+          }
+        }
+      },
+      "Groups.GroupListResponse": {
+        "type": "object",
+        "required": [
+          "meta",
+          "links",
+          "data"
+        ],
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/OffsetPaginationMeta"
+          },
+          "links": {
+            "$ref": "#/components/schemas/OffsetPaginationLinks"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Groups.Group"
+            }
+          }
+        }
+      },
+      "Groups.PrincipalListResponse": {
+        "type": "object",
+        "required": [
+          "meta",
+          "links",
+          "data"
+        ],
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/OffsetPaginationMeta"
+          },
+          "links": {
+            "$ref": "#/components/schemas/OffsetPaginationLinks"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Principal"
+            }
+          }
+        }
+      },
       "Limit": {
         "type": "integer",
         "format": "int64",
@@ -2946,6 +4543,44 @@
       },
       "Permission": {
         "type": "object",
+        "properties": {
+          "application": {
+            "type": "string"
+          },
+          "resource_type": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string",
+            "description": "The action allowed by this permission (e.g. 'read', 'create', 'delete', 'update'). Equivalent to `verb` in the v1 API."
+          },
+          "permission": {
+            "type": "string",
+            "description": "The full permission string, e.g. 'rbac:workspace:read'."
+          },
+          "description": {
+            "type": "string",
+            "description": "A description of what this permission grants access to."
+          },
+          "requires": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of other permission strings that are required alongside this one."
+          }
+        },
+        "example": {
+          "application": "rbac",
+          "resource_type": "workspace",
+          "operation": "read",
+          "permission": "rbac:workspace:read",
+          "description": "Read access to workspaces",
+          "requires": []
+        }
+      },
+      "PermissionWrite": {
+        "type": "object",
         "required": [
           "application",
           "resource_type",
@@ -2959,13 +4594,129 @@
             "type": "string"
           },
           "operation": {
-            "type": "string"
+            "type": "string",
+            "description": "The action allowed by this permission (e.g. 'read', 'create', 'delete', 'update'). Equivalent to `verb` in the v1 API."
           }
         },
+        "description": "Permission data for role create and update operations. Unlike `Permission`, all fields are required.",
         "example": {
           "application": "rbac",
           "resource_type": "workspace",
           "operation": "read"
+        }
+      },
+      "Permissions.Pagination": {
+        "type": "object",
+        "required": [
+          "meta",
+          "links"
+        ],
+        "properties": {
+          "meta": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationMeta"
+              }
+            ],
+            "description": "Pagination metadata"
+          },
+          "links": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationLinks"
+              }
+            ],
+            "description": "Pagination links"
+          }
+        }
+      },
+      "Permissions.PermissionListResponse": {
+        "type": "object",
+        "required": [
+          "meta",
+          "links",
+          "data"
+        ],
+        "properties": {
+          "meta": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationMeta"
+              }
+            ],
+            "description": "Pagination metadata"
+          },
+          "links": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationLinks"
+              }
+            ],
+            "description": "Pagination links"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Permission"
+            },
+            "description": "List of permissions"
+          }
+        },
+        "example": {
+          "meta": {
+            "count": 100,
+            "limit": 10,
+            "offset": 0
+          },
+          "links": {
+            "first": "/api/rbac/v2/permissions/?limit=10&offset=0",
+            "next": "/api/rbac/v2/permissions/?limit=10&offset=10",
+            "previous": null,
+            "last": "/api/rbac/v2/permissions/?limit=10&offset=90"
+          },
+          "data": [
+            {
+              "application": "rbac",
+              "resource_type": "workspace",
+              "operation": "read",
+              "permission": "rbac:workspace:read",
+              "description": "Read access to workspaces",
+              "requires": []
+            }
+          ]
+        }
+      },
+      "Permissions.PermissionOptionsResponse": {
+        "type": "object",
+        "required": [
+          "meta",
+          "links",
+          "data"
+        ],
+        "properties": {
+          "meta": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationMeta"
+              }
+            ],
+            "description": "Pagination metadata"
+          },
+          "links": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationLinks"
+              }
+            ],
+            "description": "Pagination links"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of distinct values for the requested field"
+          }
         }
       },
       "Principal": {
@@ -3012,17 +4763,38 @@
           "group_count": {
             "type": "integer",
             "format": "int32",
-            "minimum": 0,
             "description": "Number of groups the principal belongs to"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Display name of the service account. Only present for service-account principals."
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Description of the service account. Only present for service-account principals."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Owner username of the service account. Only present for service-account principals."
+          },
+          "time_created": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp when the service account was created. Only present for service-account principals."
           }
         },
         "example": {
-          "uuid": "550e8400-e29b-41d4-a716-446655440002",
-          "username": "jdoe",
-          "type": "user",
-          "user_id": "12345",
-          "service_account_id": null,
-          "group_count": 3
+          "uuid": "660e8400-e29b-41d4-a716-446655440003",
+          "username": "service-account-abc123",
+          "type": "service-account",
+          "user_id": null,
+          "service_account_id": "abc123",
+          "group_count": 1,
+          "display_name": "My Service Account",
+          "description": "Automation service account",
+          "owner": "jdoe",
+          "time_created": 1700000000
         }
       },
       "PrincipalListResponse": {
@@ -3054,6 +4826,15 @@
           "service-account"
         ],
         "description": "Principal type"
+      },
+      "PrincipalTypeFilter": {
+        "type": "string",
+        "enum": [
+          "user",
+          "service-account",
+          "all"
+        ],
+        "description": "Principal type filter for listing principals. Extends PrincipalType with 'all' to return both users and service accounts."
       },
       "Problems.Problem400": {
         "type": "object",
@@ -3300,6 +5081,58 @@
           }
         ]
       },
+      "Problems.Problem409": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "detail"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "http://project-kessel.org/problems/conflict"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "enum": [
+              "The request conflicts with the current state of the resource."
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "example": "Cannot delete group with active role bindings."
+          }
+        },
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "$ref": "#/components/schemas/Problems.ProblemType"
+              },
+              "status": {
+                "type": "number",
+                "enum": [
+                  409
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "instance": {
+                "type": "string",
+                "format": "uri"
+              }
+            }
+          }
+        ]
+      },
       "Problems.Problem500": {
         "type": "object",
         "required": [
@@ -3347,58 +5180,6 @@
           }
         ]
       },
-      "Problems.Problem503": {
-        "type": "object",
-        "required": [
-          "type",
-          "title",
-          "detail"
-        ],
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "http://project-kessel.org/problems/service-unavailable"
-            ]
-          },
-          "title": {
-            "type": "string",
-            "enum": [
-              "A downstream dependency is temporarily unavailable. Please retry shortly."
-            ]
-          },
-          "detail": {
-            "type": "string",
-            "example": "Inventory authorization is temporarily unavailable. Please try again shortly."
-          }
-        },
-        "allOf": [
-          {
-            "type": "object",
-            "properties": {
-              "type": {
-                "$ref": "#/components/schemas/Problems.ProblemType"
-              },
-              "status": {
-                "type": "number",
-                "enum": [
-                  503
-                ]
-              },
-              "title": {
-                "type": "string"
-              },
-              "detail": {
-                "type": "string"
-              },
-              "instance": {
-                "type": "string",
-                "format": "uri"
-              }
-            }
-          }
-        ]
-      },
       "Problems.ProblemType": {
         "type": "string",
         "enum": [
@@ -3409,7 +5190,7 @@
           "http://project-kessel.org/problems/invalid-request",
           "http://project-kessel.org/problems/already-exists",
           "http://project-kessel.org/problems/workspace-not-empty",
-          "http://project-kessel.org/problems/service-unavailable"
+          "http://project-kessel.org/problems/conflict"
         ]
       },
       "Problems.Workspace.Problem400WorkspaceNotEmpty": {
@@ -4010,6 +5791,14 @@
           }
         ]
       },
+      "RoleDiscriminator": {
+        "type": "string",
+        "enum": [
+          "any",
+          "all"
+        ],
+        "description": "Role name matching discriminator for the role_names filter"
+      },
       "Roles.BatchDeleteRolesRequest": {
         "type": "object",
         "required": [
@@ -4051,7 +5840,7 @@
           "permissions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Permission"
+              "$ref": "#/components/schemas/PermissionWrite"
             },
             "description": "List of permissions to assign to this role"
           }

@@ -38,6 +38,12 @@ class DevelopmentIdentityHeaderMiddleware(MiddlewareMixin):  # pylint: disable=t
 
         """
         if hasattr(request, "META"):
+            # Allow local validation scripts and developers to supply a
+            # temporary identity. When no identity is supplied, retain the
+            # historic fixed development identity below.
+            if request.META.get(self.header):
+                return
+
             user_type = request.headers.get("User-Type")
             if user_type and user_type in ["associate", "internal", "turnpike"]:
                 identity_header = {

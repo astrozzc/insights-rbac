@@ -13,7 +13,7 @@ source "${SCRIPT_DIR}/../common/container_runtime.sh"
 source "${SCRIPT_DIR}/prepare-full-kessel-configs.sh"
 
 INVENTORY_API_REPO="${1:?inventory-api repo path required}"
-RBAC_OVERRIDE="${2:?compose override file required}"
+RBAC_OVERRIDE_FILE="${2:?compose override file required}"
 
 detect_container_runtime
 
@@ -31,7 +31,29 @@ export DOCKER="${CONTAINER_RUNTIME}"
 export COMPOSE_PULL_MODE="${COMPOSE_PULL_MODE:-missing}"
 export RBAC_IMAGE="${RBAC_IMAGE:?RBAC_IMAGE must be set by up-full.sh}"
 
-compose_up_args=(up --pull "${COMPOSE_PULL_MODE}" -d)
+write_spicedb_schema() {
+  local spicedb_token schema_file
+  schema_file="${COMPOSE_DIR}/configs/schema.zed"
+  spicedb_token=$(awk -F= '$1 == "SPICEDB_GRPC_PRESHARED_KEY" {print substr($0, index($0, "=") + 1); exit}' "${ENV_FILE}")
+  [[ -n "${spicedb_token}" ]] || {
+    log-err "SPICEDB_GRPC_PRESHARED_KEY is missing from ${ENV_FILE}"
+    exit 1
+  }
+
+  log-info 'Applying selected schema directly to SpiceDB...'
+  "${CONTAINER_RUNTIME}" run --rm --network kessel \
+    -e "ZED_TOKEN=${spicedb_token}" \
+    -e ZED_ENDPOINT=spicedb:50051 \
+    -e ZED_INSECURE=true \
+    -v "${schema_file}:/schema.zed:ro,z" \
+    docker.io/authzed/zed:latest schema write /schema.zed
+}
+
+if [[ "${STACK_WAS_RUNNING:-false}" == true ]]; then
+  write_spicedb_schema
+fi
+
+compose_up_args=(up --build --pull "${COMPOSE_PULL_MODE}" -d)
 if [[ "${RBAC_FORCE_RECREATE:-false}" == "true" ]]; then
   compose_up_args+=(--force-recreate)
 fi
@@ -39,5 +61,5 @@ fi
 "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
   --profile relations --profile consumer --profile rbac \
   -f "${COMPOSE_DIR}/docker-compose.yaml" \
-  -f "${RBAC_OVERRIDE}" \
+  -f "${RBAC_OVERRIDE_FILE}" \
   "${compose_up_args[@]}"

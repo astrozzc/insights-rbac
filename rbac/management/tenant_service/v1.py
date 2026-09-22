@@ -3,6 +3,7 @@
 from typing import Optional
 
 from management.principal.model import Principal
+from management.relation_replicator.noop_replicator import NoopReplicator
 from management.tenant_mapping.model import logger
 from management.tenant_service.tenant_service import BootstrappedTenant
 from management.tenant_service.tenant_service import _ensure_principal_with_user_id_in_tenant
@@ -43,7 +44,7 @@ class V1TenantBootstrapService:
             except Tenant.DoesNotExist:
                 return None
 
-        _ensure_principal_with_user_id_in_tenant(user, bootstrapped.tenant, upsert=upsert)
+        _ensure_principal_with_user_id_in_tenant(user, bootstrapped.tenant, upsert=upsert, replicator=NoopReplicator())
 
         return bootstrapped
 

@@ -15,11 +15,11 @@ The pool's `max_connections` must match `GUNICORN_THREAD_LIMIT` (default 10).
 | `AccessCache` | `rbac::policy::tenant={org_id}::user={uuid}` | `ACCESS_CACHE_LIFETIME` (600s) | JSON (hset) |
 | `PrincipalCache` | `rbac::principal::{org_id}::{username}` | `PRINCIPAL_CACHE_LIFETIME` (3600s) | pickle |
 | `JWKSCache` | `rbac::jwks::response` | `IT_TOKEN_JKWS_CACHE_LIFETIME` (28800s) | JSON |
+| `JWTCache` | `rbac::jwt::relations` | `IT_TOKEN_JKWS_CACHE_LIFETIME` (28800s) | string |
 
 ### Cache Rules
 
-- **Every `get_cached()` call does a health check ping.** For high-throughput paths (Kafka consumers), prefer a cache subclass that skips the ping where one exists.
-- **Inventory API OAuth2 tokens are cached in-process, not in Redis.** `management/utils.py`'s `inventory_auth_credentials` (a `kessel.auth.OAuth2ClientCredentials`) handles token fetch/refresh/caching internally (thread-safe, 300s refresh buffer). Build gRPC auth metadata via `get_inventory_auth_metadata()` rather than any Redis-backed JWT cache.
+- **Every `get_cached()` call does a health check ping.** For high-throughput paths (Kafka consumers), use `JWTCacheOptimized` which skips the ping.
 - **Signal-driven invalidation** is the primary cache-busting mechanism. Changes to `Role`, `Access`, `ResourceDefinition`, `Policy`, `Group` membership all trigger cache deletes via Django signals. These signals are gated by `ACCESS_CACHE_ENABLED` and `ACCESS_CACHE_CONNECT_SIGNALS`.
 - **Platform-default group changes flush the entire tenant's policy cache** (`delete_all_policies_for_tenant`). Non-default changes only flush affected principal UUIDs. Be aware that `scan_iter` with `BATCH_DELETE_SIZE=1000` is used for tenant-wide deletes.
 - **PrincipalCache** is used in `management/utils.py:get_principal()`. Always call `cache_principal()` after creating or fetching a principal from the DB to keep the cache warm.
@@ -111,8 +111,8 @@ Set `ATOMIC_RETRY_DISABLED=True` in test settings to skip `pgtransaction` wrappe
 |---|---|---|
 | `cross_account_cleanup` | Daily at midnight | Expire cross-account requests |
 | `run_redis_cache_health` | Every 30 seconds | Toggle caching on Redis failure |
-| `principal_cleanup_via_umb` | Every 60 seconds (if UMB enabled) | Process principal events from UMB |
-| `principal_cleanup` | Every 7 days (if UMB disabled) | Clean stale principals via BOP |
+| `principal_cleanup_via_kafka` | Every 60 seconds (if Kafka cleanup enabled + topic set) | Process principal events from Kafka |
+| `principal_cleanup` | Approximately every 7 days, on the 7th/14th/21st/28th (fallback when Kafka cleanup not configured) | Clean stale principals via BOP |
 
 ### Task Guidelines
 

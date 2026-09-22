@@ -362,7 +362,7 @@ def external_principal_to_user(principal: dict) -> User:
     user.user_id = principal.get("user_id")
     user.org_id = principal.get("org_id")
     user.username = principal.get("username")
-    user.is_active = principal.get("is_active", False)
+    user.is_active = principal.get("is_active", True)
     user.admin = principal.get("is_org_admin", False)
     return user
 

@@ -31,6 +31,7 @@ insights-rbac is a Django REST Framework microservice providing Role-Based Acces
 | `docs/source/specs/typespec/main.tsp` | TypeSpec source -- the contract for v2 API changes |
 | `docs/MCP.md` | MCP endpoint developer guide (protocol, tools, adding new tools) |
 | `docs/MCP-operator-guide.md` | MCP endpoint operator guide (deployment, config, security, metrics) |
+| [`docs/v2-org-determination.md`](docs/v2-org-determination.md) | How the `/access` endpoint determines V2 org status (two-layer check, strict vs general flags, transition states) |
 | `Makefile` | Build, test, migration, and Docker commands |
 | `tox.ini` | Test environments, linting config, env vars for tests |
 | `.pre-commit-config.yaml` | Pre-commit hooks: flake8, black, trailing whitespace, django-upgrade, openapi-spec-validator |

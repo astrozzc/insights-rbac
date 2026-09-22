@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# create_workspace_local.sh — Full workspace create + Read-Your-Writes (RYW) test
+# create-workspace.sh — Full workspace create + Read-Your-Writes (RYW) test
 #
 # Ensures local Docker infrastructure is running, wires RBAC to a *real* Kessel
 # Relations API (not the mock server), then creates workspace(s) via the v2 API
@@ -19,19 +19,20 @@
 #
 # Usage:
 #   make docker-local-up          # preferred: all services in Docker
-#   ./scripts/create_workspace_local.sh
-#   ./scripts/create_workspace_local.sh --count 1
-#   ./scripts/create_workspace_local.sh --no-start    # stack already up (e.g. after make docker-local-up)
-#   ./scripts/create_workspace_local.sh --help
+#   ./scripts/validations/api/create-workspace.sh
+#   ./scripts/validations/api/create-workspace.sh --count 1
+#   ./scripts/validations/api/create-workspace.sh --no-start    # stack already up
+#   ./scripts/validations/api/create-workspace.sh --user local-v2-non-admin
+#   ./scripts/validations/api/create-workspace.sh --help
 # =============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RYW_TEST_DIR="$SCRIPT_DIR/local_ryw_test"
-PIDS_DIR="$SCRIPT_DIR/.create_workspace_local_pids"
-LOG_DIR="$SCRIPT_DIR/.create_workspace_local_logs"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+RYW_TEST_DIR="$PROJECT_DIR/scripts/local_ryw_test"
+PIDS_DIR="$PROJECT_DIR/scripts/.create_workspace_pids"
+LOG_DIR="$PROJECT_DIR/scripts/.create_workspace_logs"
 
 # Defaults (override via environment)
 API_URL="${API_URL:-http://localhost:9080}"
@@ -49,12 +50,13 @@ KESSEL_ADDR_HOST="${KESSEL_HOST}:${KESSEL_PORT}"
 KESSEL_ADDR_CONTAINER="${KESSEL_ADDR_CONTAINER:-host.docker.internal:${KESSEL_PORT}}"
 WORKSPACE_COUNT="${WORKSPACE_COUNT:-1}"
 READ_YOUR_WRITES_TIMEOUT_SECONDS="${READ_YOUR_WRITES_TIMEOUT_SECONDS:-30}"
+RYW_USER="${RYW_USER:-local-v2-org-admin}"
 NO_START=false
 RUN_LISTEN=false
 
 CONSUMER_CONTAINER_NAME="rbac_kafka_consumer_local"
 RBAC_SERVER_CONTAINER="rbac_server"
-ZED_LOCAL_SCRIPT="$SCRIPT_DIR/zed_local.sh"
+ZED_LOCAL_SCRIPT="$PROJECT_DIR/scripts/zed_local.sh"
 
 SPICEDB_HOST="${SPICEDB_HOST:-localhost}"
 SPICEDB_PORT="${SPICEDB_PORT:-50051}"
@@ -62,15 +64,28 @@ RUN_ZED=false
 RUN_CHECK_HBI=false
 RESULTS_FILE="$LOG_DIR/workspace_results.json"
 
-# shellcheck source=common/logging.sh
-source "$SCRIPT_DIR/common/logging.sh"
+# shellcheck source=../../common/logging.sh
+source "$PROJECT_DIR/scripts/common/logging.sh"
 
 # ---------------------------------------------------------------------------
 # Container runtime detection
 # ---------------------------------------------------------------------------
 
 detect_runtime() {
-    if command -v docker &> /dev/null && docker info &> /dev/null 2>&1; then
+    # Prefer the runtime that already owns the full local stack.  In Podman
+    # development environments `podman info` can be unavailable to the host
+    # shell even though container commands used by the validation work.
+    if command -v docker &> /dev/null && docker container inspect full-kessel-rbac-server-1 &> /dev/null 2>&1; then
+        CONTAINER_RUNTIME="docker"
+        if docker compose version &> /dev/null 2>&1; then
+            COMPOSE_CMD="docker compose"
+        else
+            COMPOSE_CMD="docker-compose"
+        fi
+    elif command -v podman &> /dev/null && podman container inspect full-kessel-rbac-server-1 &> /dev/null 2>&1; then
+        CONTAINER_RUNTIME="podman"
+        COMPOSE_CMD="podman compose"
+    elif command -v docker &> /dev/null && docker info &> /dev/null 2>&1; then
         CONTAINER_RUNTIME="docker"
         if docker compose version &> /dev/null 2>&1; then
             COMPOSE_CMD="docker compose"
@@ -118,7 +133,48 @@ is_container_running() {
 }
 
 is_full_kessel_stack_running() {
-    $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -qE '^full-kessel-rbac-server-'
+    if $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -qE '^full-kessel-rbac-server-'; then
+        return 0
+    fi
+    curl -sf "http://localhost:${API_PORT}/metrics" >/dev/null 2>&1
+}
+
+is_full_kessel_database_running() {
+    $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -qE '^full-kessel-rbac-database-'
+}
+
+resolve_ryw_user() {
+    local user_id is_org_admin
+    case "$RYW_USER" in
+        local-v1-org-admin)
+            user_id=local-v1-org-admin-10001
+            is_org_admin=true
+            ;;
+        local-v1-non-org-admin)
+            user_id=local-v1-non-org-admin-10001
+            is_org_admin=false
+            ;;
+        local-v2-org-admin)
+            user_id=local-v2-org-admin-10001
+            is_org_admin=true
+            ;;
+        local-v2-non-admin)
+            user_id=local-v2-non-admin-10001
+            is_org_admin=false
+            ;;
+        *)
+            log-err "Unknown user '${RYW_USER}'. Choose one of the four default full-stack users."
+            exit 1
+            ;;
+    esac
+
+    RYW_ORG_ID="${RYW_ORG_ID:-local-full-stack}"
+    RYW_ACCOUNT_ID="${RYW_ACCOUNT_ID:-10001}"
+    RYW_USERNAME="${RYW_USERNAME:-${RYW_USER}}"
+    RYW_USER_ID="${RYW_USER_ID:-${user_id}}"
+    RYW_IS_ORG_ADMIN="${RYW_IS_ORG_ADMIN:-${is_org_admin}}"
+    export RYW_ORG_ID RYW_ACCOUNT_ID RYW_USERNAME RYW_USER_ID RYW_IS_ORG_ADMIN
+    log-info "Using RYW user=${RYW_USERNAME} user_id=${RYW_USER_ID} org=${RYW_ORG_ID} org_admin=${RYW_IS_ORG_ADMIN}"
 }
 
 is_hbi_stack_running() {
@@ -537,6 +593,27 @@ ensure_kafka_consumer() {
     fi
 }
 
+wait_for_full_kessel_consumer() {
+    local timeout="${FULL_KESSEL_CONSUMER_WAIT_SECONDS:-30}"
+    local elapsed=0
+    local container_names
+    local container_name
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+        container_names=$($CONTAINER_RUNTIME ps --format '{{.Names}}')
+        while IFS= read -r container_name; do
+            if [[ "$container_name" == full-kessel-rbac-kafka-consumer-* ]]; then
+                return 0
+            fi
+        done <<< "$container_names"
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    return 1
+}
+
 run_workspace_create_test() {
     log-info "Creating ${WORKSPACE_COUNT} workspace(s) and waiting for RYW..."
 
@@ -548,16 +625,22 @@ run_workspace_create_test() {
         args+=("--save-results" "$RESULTS_FILE")
     fi
     if [ "$RUN_CHECK_HBI" = true ]; then
-        args+=("--check-hbi" "--inventory-api-endpoint" "$INVENTORY_API_ENDPOINT")
+        log-warn "Kessel Inventory verification is not supported by test_ryw.py; running the RYW check only"
     fi
 
     cd "$PROJECT_DIR"
-    "$PYTHON" "$RYW_TEST_DIR/test_ryw.py" \
+    local test_args=(
+        "$PYTHON" "$RYW_TEST_DIR/test_ryw.py"
         --api-url "$API_URL" \
+        --api-path-prefix "$API_PATH_PREFIX" \
         --db-host "$DB_HOST" \
         --db-port "$DB_PORT" \
-        --count "$WORKSPACE_COUNT" \
-        "${args[@]}"
+        --count "$WORKSPACE_COUNT"
+    )
+    if [ "${#args[@]}" -gt 0 ]; then
+        test_args+=("${args[@]}")
+    fi
+    "${test_args[@]}"
 }
 
 run_zed_verification() {
@@ -589,10 +672,11 @@ Full local workspace create test with real Kessel Relations API and RYW.
 Options:
   --count N       Number of workspaces to create (default: 1)
   --listen        Also run independent PostgreSQL LISTEN for pg_notify
-  --zed           After create, verify tuples in SpiceDB with zed (needs ZED_SPICEDB_PSK)
-  --check-hbi     Verify workspace replicated to Kessel Inventory (HBI source of truth)
-  --no-check-hbi  Skip Kessel Inventory / HBI verification
+  --zed           After create, verify tuples in SpiceDB with zed (local stack token is automatic)
+  --check-hbi     Request HBI verification (currently informational; RYW only)
+  --no-check-hbi  Skip the informational HBI check request
   --no-start      Skip Docker bootstrap (assume services already running)
+  --user USER     Use one of the default full-stack users (default: local-v2-org-admin)
   --help          Show this help
 
 Environment:
@@ -604,18 +688,20 @@ Environment:
   API_PATH_PREFIX          API path prefix (default: /api/rbac)
   INVENTORY_API_ENDPOINT   Kessel Inventory gRPC host:port for HBI check (default: localhost:9081)
   CHECK_HBI                auto|true|false — verify workspace in Kessel Inventory (default: auto)
+  FULL_KESSEL_CONSUMER_WAIT_SECONDS
+                           wait for the full-stack Kafka consumer (default: 30)
   RELATIONS_API_CLIENT_ID  OAuth client id for Kessel JWT (required for stage)
   RELATIONS_API_CLIENT_SECRET  OAuth client secret for Kessel JWT
-  ZED_SPICEDB_PSK          SpiceDB PSK for zed context (required with --zed)
+  ZED_SPICEDB_PSK          SpiceDB PSK for a stage zed context (local stack token is automatic)
 
 Prerequisites:
   Option A (all-in-docker, recommended):
     make docker-local-up
-    ./scripts/create_workspace_local.sh --no-start
+    ./scripts/validations/api/create-workspace.sh --no-start
 
   Option A2 (full Kessel + Debezium + RBAC + HBI):
-    make docker-local-full-up
-    ./scripts/create_workspace_local.sh --no-start --count 1
+    make docker-local-full-up rbac=local rbac-config=upstream
+    ./scripts/validations/api/create-workspace.sh --no-start --count 1
 
   Option B (stage Kessel via port-forward):
     ./scripts/zed_local.sh ensure-forwards
@@ -661,6 +747,11 @@ parse_args() {
                 NO_START=true
                 shift
                 ;;
+            --user)
+                [[ $# -ge 2 ]] || { log-err "--user requires a value"; exit 1; }
+                RYW_USER="$2"
+                shift 2
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -687,8 +778,17 @@ main() {
 
     detect_runtime
     detect_python
+    resolve_ryw_user
     resolve_check_hbi
     mkdir -p "$LOG_DIR" "$PIDS_DIR"
+
+    if [ "$NO_START" = false ] && is_full_kessel_stack_running; then
+        log-info "Full Kessel local stack already running — reusing it instead of bootstrapping standalone RBAC services"
+        NO_START=true
+    elif [ "$NO_START" = false ] && is_full_kessel_database_running; then
+        log-info "Full Kessel database detected — waiting for the full stack instead of starting legacy rbac_db"
+        NO_START=true
+    fi
 
     if [ "$NO_START" = false ]; then
         if is_container_running rbac_local_server 2>/dev/null; then
@@ -712,7 +812,7 @@ main() {
         fi
         wait_for_http "http://localhost:${API_PORT}/metrics" "RBAC API" "$api_ready_timeout"
         if is_full_kessel_stack_running; then
-            if ! $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -qE '^full-kessel-rbac-kafka-consumer-'; then
+            if ! wait_for_full_kessel_consumer; then
                 log-warn "full-kessel RBAC Kafka consumer not running — RYW may fail"
             fi
         elif ! is_container_running "$CONSUMER_CONTAINER_NAME"; then
