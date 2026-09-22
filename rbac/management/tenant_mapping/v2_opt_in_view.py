@@ -23,7 +23,7 @@ from management.metric_utils import track_result_metric
 from management.permissions import AdminAccessPermission
 from management.tenant_mapping.v2_activation import is_v2_opted_in, set_v2_opt_in_state
 from management.tenant_mapping.v2_eligibility import OptInEligibleState, OptInIneligibleState, check_v2_eligibility
-from prometheus_client import Counter
+from prometheus_client import Counter, Histogram
 from rest_framework import permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework.viewsets import ViewSet
@@ -40,6 +40,11 @@ rbac_v2_optin_status_requests_total = Counter(
     "rbac_v2_optin_status_requests_total",
     "The total number of requests made to the opt-in status endpoint",
     labelnames=["result"],
+)
+
+rbac_v2_optin_status_latency_seconds = Histogram(
+    "rbac_v2_optin_status_latency_seconds",
+    "The amount of time taken to read a tenant's opt-in status",
 )
 
 rbac_v2_optin_eligibility_requests_total = Counter(
@@ -129,6 +134,7 @@ class OptInViewSet(ViewSet):
 
         return _OptInIneligibilitySerializer(eligibility).data
 
+    @rbac_v2_optin_status_latency_seconds.time()
     def status(self, request):
         """Get the current opt-in state of the requestor's tenant."""
         with track_result_metric(rbac_v2_optin_status_requests_total) as result:
