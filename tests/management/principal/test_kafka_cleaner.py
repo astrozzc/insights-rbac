@@ -790,9 +790,9 @@ class PrincipalKafkaTests(IdentityRequest):
         mock_service = MagicMock()
         bootstrap_mock.return_value = mock_service
 
-        # Patch retrieve_user_info_kafka and retrieve_user_info_umb to track which is called
+        # Patch retrieve_user_info_kafka and retrieve_user_info_xml to track which is called
         with patch("management.principal.cleaner.retrieve_user_info_kafka") as kafka_retrieve_mock:
-            with patch("management.principal.cleaner.retrieve_user_info_umb") as umb_retrieve_mock:
+            with patch("management.principal.cleaner.retrieve_user_info_xml") as xml_retrieve_mock:
                 # Set up mock to return a user
                 from api.models import User
 
@@ -806,9 +806,9 @@ class PrincipalKafkaTests(IdentityRequest):
                 # Run in normal mode
                 process_principal_events_from_kafka(dry_run=False)
 
-                # Verify JSON retrieval was called (not UMB/XML retrieval)
+                # Verify JSON retrieval was called (not XML retrieval)
                 kafka_retrieve_mock.assert_called_once()
-                umb_retrieve_mock.assert_not_called()
+                xml_retrieve_mock.assert_not_called()
 
     @patch(
         "management.principal.proxy.PrincipalProxy._request_principals",
