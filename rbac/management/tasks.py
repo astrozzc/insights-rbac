@@ -74,14 +74,6 @@ def principal_cleanup():
 
 
 @shared_task
-def principal_cleanup_via_umb():
-    """Celery task to clean up principals no longer existing (UMB-only deployments)."""
-    from management.principal.cleaner import process_principal_events_from_umb
-
-    process_principal_events_from_umb()
-
-
-@shared_task
 def principal_cleanup_via_kafka():
     """Celery task to clean up principals via Kafka (Kafka-only deployments)."""
     from management.principal.cleaner import process_principal_events_from_kafka
@@ -90,189 +82,33 @@ def principal_cleanup_via_kafka():
 
 
 @shared_task
-def principal_cleanup_umb_tick(mode: Optional[str] = None):
+def principal_cleanup_kafka_tick():
     """
-    Mode-aware UMB principal-cleanup tick (scheduled independently from Kafka).
+    Kafka principal-cleanup tick.
 
-    Runs when Unleash mode is umb_only or kafka_shadow (or unknown → UMB default).
-    Skips for kafka_validation / kafka_active (Kafka tick owns those paths).
-
-    Args:
-        mode: Pre-resolved cleanup mode. When None the mode is read from Unleash
-              at call time (the default for independent beat schedules). Callers
-              that dispatch multiple ticks sequentially should resolve the mode
-              once and pass it in to avoid the flag flipping between calls.
+    Processes principal cleanup events from Kafka when enabled.
+    If KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED is False, logs a warning and returns.
     """
-    from feature_flags import FEATURE_FLAGS
-    from management.principal.cleaner import process_principal_events_from_umb
-    from sentry_sdk import capture_exception
+    from management.principal.cleaner import process_principal_events_from_kafka
 
-    if mode is None:
-        mode = FEATURE_FLAGS.get_principal_cleanup_mode()
-    logger.info("Principal cleanup UMB tick: mode=%s", mode)
-
-    if mode in ("kafka_validation", "kafka_active"):
-        logger.info("UMB tick: skipping (mode=%s is handled by Kafka tick)", mode)
+    if not settings.KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED:
+        logger.warning("Kafka principal cleanup job is disabled (KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED is False)")
         return
 
-    if mode not in ("umb_only", "kafka_shadow"):
-        logger.error("Unknown principal cleanup mode: %s, defaulting to UMB", mode)
-
-    if not settings.UMB_JOB_ENABLED:
-        if mode == "kafka_shadow":
-            logger.warning("Shadow mode requires UMB but UMB_JOB_ENABLED is False")
-        elif mode == "umb_only":
-            logger.warning("UMB mode selected but UMB_JOB_ENABLED is False")
-        else:
-            logger.warning("Fallback to UMB failed: UMB_JOB_ENABLED is False")
-        return
-
-    try:
-        if mode == "kafka_shadow":
-            logger.info("Shadow mode: Running UMB consumer (active - writes to DB)")
-        elif mode == "umb_only":
-            logger.info("UMB-only mode: processing via UMB")
-        process_principal_events_from_umb()
-    except Exception as umb_error:
-        if mode == "kafka_shadow":
-            # Shadow isolates failures so Kafka tick can still run on its own schedule
-            logger.error("Shadow mode: UMB consumer failed: %s", str(umb_error))
-            capture_exception(umb_error)
-        else:
-            raise
-
-
-@shared_task
-def principal_cleanup_kafka_tick(mode: Optional[str] = None):
-    """
-    Mode-aware Kafka principal-cleanup tick (scheduled independently from UMB).
-
-    - kafka_shadow: dry-run (no DB writes)
-    - kafka_validation: write, with UMB fallback on failure
-    - kafka_active: write
-    - umb_only / unknown: skip
-
-    Args:
-        mode: Pre-resolved cleanup mode. When None the mode is read from Unleash
-              at call time (the default for independent beat schedules). Callers
-              that dispatch multiple ticks sequentially should resolve the mode
-              once and pass it in to avoid the flag flipping between calls.
-    """
-    from feature_flags import FEATURE_FLAGS
-    from management.principal.cleaner import (
-        kafka_validation_fallback_total,
-        kafka_validation_success_total,
-        process_principal_events_from_kafka,
-        process_principal_events_from_umb,
-    )
-    from sentry_sdk import capture_exception
-
-    if mode is None:
-        mode = FEATURE_FLAGS.get_principal_cleanup_mode()
-    logger.info("Principal cleanup Kafka tick: mode=%s", mode)
-
-    if mode == "umb_only":
-        logger.info("Kafka tick: skipping (mode=%s)", mode)
-        return
-
-    if mode not in ("kafka_shadow", "kafka_validation", "kafka_active"):
-        # unknown modes are owned by UMB tick
-        logger.info("Kafka tick: skipping (mode=%s handled by UMB tick)", mode)
-        return
-
-    if mode == "kafka_shadow":
-        if not settings.KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED:
-            logger.warning("Shadow mode requires Kafka but KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED is False")
-            return
-        try:
-            logger.info("Shadow mode: Running Kafka consumer (dry-run - no DB writes)")
-            process_principal_events_from_kafka(dry_run=True)
-        except Exception as kafka_error:
-            logger.error("Shadow mode: Kafka consumer (dry-run) failed: %s", str(kafka_error))
-            capture_exception(kafka_error)
-        return
-
-    if mode == "kafka_active":
-        if settings.KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED:
-            logger.info("Kafka-active mode: processing via Kafka")
-            process_principal_events_from_kafka(dry_run=False)
-            return
-        error_msg = (
-            "Configuration mismatch: kafka_active mode selected in Unleash, "
-            "but KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED is False. "
-            "Change Unleash flag to 'umb_only' mode or enable Kafka via KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED."
-        )
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-
-    # kafka_validation: Kafka first; UMB fallback only if Kafka fails
-    logger.info("Validation mode: Kafka attempts DB write, UMB fallback if Kafka fails")
-    kafka_success = False
-
-    if settings.KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED:
-        try:
-            logger.info("Validation mode: Running Kafka consumer (primary - writes to DB)")
-            process_principal_events_from_kafka(dry_run=False)
-            kafka_success = True
-            kafka_validation_success_total.inc()
-            logger.info("Validation mode: Kafka consumer completed successfully")
-        except Exception as kafka_error:
-            logger.error("Validation mode: Kafka consumer failed: %s. Falling back to UMB.", str(kafka_error))
-            capture_exception(kafka_error)
-            kafka_success = False
-    else:
-        logger.warning("Validation mode requires Kafka but KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED is False")
-
-    if not kafka_success:
-        kafka_validation_fallback_total.inc()
-        if settings.UMB_JOB_ENABLED:
-            try:
-                logger.info("Validation mode: Running UMB consumer (fallback - writes to DB)")
-                process_principal_events_from_umb()
-                logger.info("Validation mode: UMB fallback completed successfully")
-            except Exception as umb_error:
-                logger.error("Validation mode: UMB fallback also failed: %s", str(umb_error))
-                capture_exception(umb_error)
-                raise RuntimeError(
-                    "Validation mode: Both Kafka and UMB consumers failed. Principal cleanup incomplete."
-                ) from umb_error
-        else:
-            logger.error(
-                "Validation mode: Kafka failed and UMB_JOB_ENABLED is False. " "Principal cleanup incomplete."
-            )
-            raise RuntimeError("Validation mode: Kafka failed and no UMB fallback available")
-    else:
-        logger.info(
-            "Validation mode: Kafka succeeded, UMB fallback not needed. "
-            "Monitor metrics to compare Kafka vs historical UMB performance."
-        )
+    logger.info("Kafka principal cleanup: processing via Kafka")
+    process_principal_events_from_kafka(dry_run=False)
 
 
 @shared_task
 def principal_cleanup_via_message_bus():
     """
-    Compatibility dispatcher that routes to the mode-aware UMB/Kafka ticks.
+    Compatibility dispatcher for principal cleanup via message bus.
 
-    Production beat schedules the ticks separately so each gets its own minute.
-    This task remains for tests and manual invocation; for kafka_shadow it runs
-    both ticks sequentially in-process (beat uses parallel independent schedules).
+    This task remains for backward compatibility with tests and manual invocation.
+    Routes directly to Kafka cleanup.
     """
-    from feature_flags import FEATURE_FLAGS
-
-    mode = FEATURE_FLAGS.get_principal_cleanup_mode()
-    logger.info(f"Principal cleanup mode: {mode}")
-
-    # Resolve mode once and pass it to ticks so the Unleash flag cannot flip
-    # between sequential calls (see PR #3433 review).
-    if mode == "kafka_shadow":
-        logger.info("Shadow mode: processing via UMB (active) and Kafka (dry-run)")
-        principal_cleanup_umb_tick(mode=mode)
-        principal_cleanup_kafka_tick(mode=mode)
-    elif mode in ("kafka_validation", "kafka_active"):
-        principal_cleanup_kafka_tick(mode=mode)
-    else:
-        # umb_only and unknown
-        principal_cleanup_umb_tick(mode=mode)
+    logger.info("Principal cleanup via message bus: routing to Kafka")
+    principal_cleanup_kafka_tick()
 
 
 @shared_task
