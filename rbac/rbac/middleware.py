@@ -670,7 +670,21 @@ class ReadOnlyApiMiddleware:
 
     def __call__(self, request):
         """Code to be executed for each request before or after the view is called."""
-        if self._should_deny_all_writes(request) or self._should_deny_v2_writes(request):
+        deny_all = self._should_deny_all_writes(request)
+        deny_v2 = self._should_deny_v2_writes(request)
+        if deny_all or deny_v2:
+            logger.warning(
+                "read_only_api_denied",
+                extra={
+                    "path": request.path,
+                    "method": request.method,
+                    "deny_all_writes": deny_all,
+                    "deny_v2_writes": deny_v2,
+                    "read_only_api_mode": settings.READ_ONLY_API_MODE,
+                    "v2_api_read_only_mode_enabled": FEATURE_FLAGS.is_v2_api_read_only_mode_enabled(),
+                    "request_id": getattr(request, "req_id", None),
+                },
+            )
             return self._read_only_response()
         return self.get_response(request)
 
