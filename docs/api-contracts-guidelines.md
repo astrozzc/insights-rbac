@@ -72,7 +72,7 @@ Response envelope (no `count`, no `first`/`last`):
 ```json
 {"meta": {"limit": L}, "links": {"next": "...", "previous": "..."}, "data": [...]}
 ```
-Each cursor paginator has its own `FIELD_MAPPING` dict. Role bindings use dot-notation field mapping (e.g., `role.name`, `group.modified`) for cross-relation ordering. Roles use plain field names (`name`, `last_modified`). Invalid `order_by` values raise `ValidationError` with the list of valid fields.
+Each cursor paginator has its own `FIELD_MAPPING` dict. Role bindings use dot-notation field mapping for cross-relation ordering — the list endpoint maps `role.*` and `resource.*` fields, while the by-subject endpoint maps `group.*` or `user.*` fields depending on `subject_type`. Roles use plain field names (`name`, `last_modified`). Invalid `order_by` values raise `ValidationError` with the list of valid fields.
 
 ### v2 endpoint matrix
 
@@ -94,7 +94,7 @@ Each cursor paginator has its own `FIELD_MAPPING` dict. Role bindings use dot-no
 
 **Cursor** (`V2CursorPagination` / `RoleV2CursorPagination`) is used for large, growing datasets:
 
-- **Role bindings** -- Avoids expensive `COUNT(*)` queries. Provides stable iteration under concurrent writes. Supports cross-relation `order_by` via dot notation (e.g., `role.name`, `group.modified`).
+- **Role bindings** -- Avoids expensive `COUNT(*)` queries. Provides stable iteration under concurrent writes. Supports cross-relation `order_by` via dot notation (e.g., `role.name` on the list endpoint, `group.modified` on the by-subject endpoint).
 - **Roles** -- Same cursor benefits (`RoleV2CursorPagination`). Uses plain field names (`name`, `last_modified`) since roles are queried directly, not across relations.
 
 **Workspace cursor unification is not recommended.** Cursor pagination would remove `count`/`last` links and complicate the Console "fetch all workspaces" flow. The bounded workspace dataset does not justify the client-experience cost.
@@ -115,7 +115,9 @@ Avoid `limit=-1` on large datasets (roles, role-bindings). Acceptable for bounde
 | Workspaces (offset) | Simple field names; prefix `-` for descending | `name`, `-name`, `created`, `-created`, `modified`, `-modified`, `type`, `-type` |
 | Principals (offset) | Simple field names; prefix `-` for descending | `username`, `-username` |
 | Roles (cursor) | Simple field names; prefix `-` for descending | `name`, `-name`, `last_modified`, `-last_modified` |
-| Role bindings (cursor) | Dot notation for cross-relation fields; prefix `-` for descending | `role.id`, `-role.id`, `role.name`, `-role.name`, `role.modified`, `-role.modified`, `role.created`, `-role.created`, `group.modified`, `-group.modified` |
+| Role bindings — `GET /role-bindings/` (cursor) | Dot notation for cross-relation fields; prefix `-` for descending | `role.id`, `-role.id`, `role.name`, `-role.name`, `role.modified`, `-role.modified`, `role.created`, `-role.created`, `resource.id`, `-resource.id`, `resource.type`, `-resource.type` |
+| Role bindings — `GET /role-bindings/by-subject/` `subject_type=group` (cursor) | Dot notation; prefix `-` for descending | `group.name`, `-group.name`, `group.description`, `-group.description`, `group.user_count`, `-group.user_count`, `group.uuid`, `-group.uuid`, `group.created`, `-group.created`, `group.modified`, `-group.modified`, `role.name`, `-role.name`, `role.modified`, `-role.modified`, `role.created`, `-role.created`, `last_modified`, `-last_modified` |
+| Role bindings — `GET /role-bindings/by-subject/` `subject_type=user` (cursor) | Dot notation; prefix `-` for descending | `user.username`, `-user.username`, `user.uuid`, `-user.uuid`, `role.name`, `-role.name`, `role.modified`, `-role.modified`, `role.created`, `-role.created`, `last_modified`, `-last_modified` |
 
 ## Serializer Conventions
 
