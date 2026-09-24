@@ -61,9 +61,6 @@ KEY_LOC = "/opt/rbac/rbac/management/principal/umb_certificates/tls.key"
 
 LOCK_ID = 42  # For Keith, with Love
 KAFKA_CONSUMER_LOCK_ID = 43  # Guards Kafka consumer construction to prevent multi-worker join thrash
-# Per-cycle drain budget. consumer_timeout_ms alone only stops after idle polls; a busy/backlogged
-# topic would otherwise keep the Celery task running indefinitely and block Unleash re-checks.
-KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS = 15000
 
 # UMB Metric Messages
 METRIC_STOMP_MESSAGES_ACK_TOTAL = "stomp_messages_ack_total"
@@ -198,9 +195,14 @@ QUEUE = f"/queue/Consumer.{settings.SA_NAME}.users-subscription.VirtualTopic.can
 UMB_CLIENT = Stomp(CONFIG)
 
 
-def retrieve_user_info_umb(message) -> User:
+def retrieve_user_info_umb(message, *, skip_bop: bool = False) -> User:
     """
     Retrieve user info from the message.
+
+    Args:
+        message: Parsed UMB/XML CanonicalMessage dict
+        skip_bop: If True, build User from the message payload only (no BOP call).
+            Used by Kafka dry-run/shadow mode for fast consume validation.
 
     returns:
         user: User object as of latest known state.
@@ -228,40 +230,44 @@ def retrieve_user_info_umb(message) -> User:
     if user_id is None:
         raise ValueError("User id not found in message. instance_id=%s", instance_id)
 
+    if skip_bop:
+        return _user_from_umb_message_payload(user_id, message_user, identifiers)
+
     bop_resp = PROXY.request_filtered_principals([user_id], options={"query_by": "user_id", "return_id": True})
 
     if not bop_resp["data"]:  # User has been deleted
-        # Get data from message instead.
-        user = User()
-        user.user_id = user_id
-        user.is_active = False
-        user.username = message_user["Person"]["Credentials"]["Login"]
-        # identifiers["Reference"] might be a dict
-        if not isinstance((refs := identifiers["Reference"]), list):
-            refs = [identifiers["Reference"]]
-        # Preserve original UMB behavior: use first matching reference and stop
-        # This maintains production behavior where messages typically have one of each reference type
-        # If multiple WEB/Customer or EBS/Account references exist, use the first one
-        for ref in refs:
-            if ref["@system"] == "WEB" and ref["@entity-name"] == "Customer" and ref["@qualifier"] == "id":
-                user.org_id = ref["#text"]
-                break
-            if ref["@system"] == "EBS" and ref["@entity-name"] == "Account" and ref["@qualifier"] == "number":
-                user.account = ref["#text"]
-                break
-
-        return user
+        return _user_from_umb_message_payload(user_id, message_user, identifiers)
 
     user_data = bop_resp["data"][0]
     return external_principal_to_user(user_data)
 
 
-def retrieve_user_info_kafka(message) -> User:
+def _user_from_umb_message_payload(user_id: str, message_user: dict, identifiers: dict) -> User:
+    """Build a User from UMB message fields when BOP has no data (or is skipped)."""
+    user = User()
+    user.user_id = user_id
+    user.is_active = False
+    user.username = message_user["Person"]["Credentials"]["Login"]
+    if not isinstance((refs := identifiers["Reference"]), list):
+        refs = [identifiers["Reference"]]
+    for ref in refs:
+        if ref["@system"] == "WEB" and ref["@entity-name"] == "Customer" and ref["@qualifier"] == "id":
+            user.org_id = ref["#text"]
+            break
+        if ref["@system"] == "EBS" and ref["@entity-name"] == "Account" and ref["@qualifier"] == "number":
+            user.account = ref["#text"]
+            break
+    return user
+
+
+def retrieve_user_info_kafka(message, *, skip_bop: bool = False) -> User:
     """
     Retrieve user info from the Kafka message.
 
     Args:
         message: JSON message from Kafka containing user event data
+        skip_bop: If True, build User from the message payload only (no BOP call).
+            Used by Kafka dry-run/shadow mode for fast consume validation.
 
     returns:
         user: User object as of latest known state.
@@ -299,42 +305,45 @@ def retrieve_user_info_kafka(message) -> User:
     if user_id is None:
         raise ValueError(f"User id not found in message. instance_id={instance_id}")
 
+    if skip_bop:
+        return _user_from_kafka_message_payload(user_id, message_user, identifiers)
+
     # Query BOP for user information
     bop_resp = PROXY.request_filtered_principals([user_id], options={"query_by": "user_id", "return_id": True})
 
     if not bop_resp["data"]:  # User has been deleted
-        # Get data from message instead
-        user = User()
-        user.user_id = user_id
-        user.is_active = False
-        user.username = message_user["Person"]["Credentials"]["Login"]
-
-        # Handle references (might be a dict or list)
-        references = identifiers.get("Reference", [])
-        if not isinstance(references, list):
-            references = [references]
-
-        # Match UMB behavior: use first matching reference and stop (preserve production semantics)
-        # Kafka receives the same messages as UMB (just different transport), so behavior should be identical
-        # Messages typically have one WEB/Customer reference (org_id) and one EBS/Account reference (account)
-        for ref in references:
-            is_web_customer = (
-                ref.get("system") == "WEB" and ref.get("entity-name") == "Customer" and ref.get("qualifier") == "id"
-            )
-            is_ebs_account = (
-                ref.get("system") == "EBS" and ref.get("entity-name") == "Account" and ref.get("qualifier") == "number"
-            )
-            if is_web_customer:
-                user.org_id = ref.get("text") or ref.get("value")
-                break
-            if is_ebs_account:
-                user.account = ref.get("text") or ref.get("value")
-                break
-
-        return user
+        return _user_from_kafka_message_payload(user_id, message_user, identifiers)
 
     user_data = bop_resp["data"][0]
     return external_principal_to_user(user_data)
+
+
+def _user_from_kafka_message_payload(user_id: str, message_user: dict, identifiers: dict) -> User:
+    """Build a User from Kafka message fields when BOP has no data (or is skipped)."""
+    user = User()
+    user.user_id = user_id
+    user.is_active = False
+    user.username = message_user["Person"]["Credentials"]["Login"]
+
+    references = identifiers.get("Reference", [])
+    if not isinstance(references, list):
+        references = [references]
+
+    for ref in references:
+        is_web_customer = (
+            ref.get("system") == "WEB" and ref.get("entity-name") == "Customer" and ref.get("qualifier") == "id"
+        )
+        is_ebs_account = (
+            ref.get("system") == "EBS" and ref.get("entity-name") == "Account" and ref.get("qualifier") == "number"
+        )
+        if is_web_customer:
+            user.org_id = ref.get("text") or ref.get("value")
+            break
+        if is_ebs_account:
+            user.account = ref.get("text") or ref.get("value")
+            break
+
+    return user
 
 
 class _LockContention(Exception):
@@ -411,12 +420,16 @@ class MessageProcessingResult(NamedTuple):
     success: bool
 
 
-def _parse_kafka_message_to_user(message):
+def _parse_kafka_message_to_user(message, *, skip_bop: bool = False):
     """Parse a Kafka message into a User object.
 
     Handles tombstones, JSON and XML formats.
     Returns (user, None) on success or (None, 'tombstone') for tombstones.
     Raises on parse failure.
+
+    Args:
+        message: Kafka message
+        skip_bop: If True, do not call BOP (message-payload User only). Used for dry-run.
     """
     if message.value is None:
         return None, "tombstone"
@@ -426,12 +439,12 @@ def _parse_kafka_message_to_user(message):
     try:
         message_data = json.loads(message_value)
         canonical_message = message_data.get("CanonicalMessage", message_data)
-        return retrieve_user_info_kafka(canonical_message), None
+        return retrieve_user_info_kafka(canonical_message, skip_bop=skip_bop), None
     except json.JSONDecodeError as json_error:
         try:
             data_dict = xmltodict.parse(message_value)
             canonical_message = data_dict.get("CanonicalMessage")
-            return retrieve_user_info_umb(canonical_message), None
+            return retrieve_user_info_umb(canonical_message, skip_bop=skip_bop), None
         except ExpatError as xml_error:
             raise Exception(
                 f"Message is neither valid JSON nor valid XML. " f"JSON error: {json_error}. XML error: {xml_error}"
@@ -518,17 +531,18 @@ def process_kafka_message(
         message: Kafka message containing user event data
         bootstrap_service: Service for updating user/tenant state
         dlq_producer: Optional RBACProducer instance for sending failed messages to DLQ
-        dry_run: If True, validate message but don't write to database (shadow mode)
+        dry_run: If True, validate message structure and commit without BOP or DB writes (shadow mode)
 
     Returns:
         MessageProcessingResult with:
         - should_continue: False if another listener is running (lock contention), True otherwise
         - success: True if message was processed successfully, False if it failed
     """
-    # --- 1. Parse message + resolve user outside the transaction ---
-    # This calls BOP (network I/O) so can raise transient errors too.
+    # --- 1. Parse message (+ resolve user via BOP unless dry-run) ---
+    # Live mode calls BOP (network I/O) so can raise transient errors too.
+    # Dry-run skips BOP and builds User from the payload only for structural validation.
     try:
-        user, marker = _parse_kafka_message_to_user(message)
+        user, marker = _parse_kafka_message_to_user(message, skip_bop=dry_run)
     except Exception as e:
         mode_msg = " (DRY RUN)" if dry_run else ""
         logger.error("process_kafka_message: Error parsing Kafka message%s: %s", mode_msg, str(e))
@@ -577,11 +591,12 @@ def process_kafka_message(
         kafka_messages_success_total.inc()
         return MessageProcessingResult(should_continue=True, success=True)
 
-    # --- 3. Dry-run mode: validate only, no DB writes ---
+    # --- 3. Dry-run mode: structure validated above (no BOP, no DB writes) ---
     if dry_run:
-        logger.debug("DRY RUN: Would process user")
-        if not user.is_active or settings.PRINCIPAL_CLEANUP_UPDATE_ENABLED_KAFKA:
-            logger.debug("DRY RUN: Would call bootstrap_service.update_user()")
+        logger.debug(
+            "DRY RUN: Validated message without BOP (user_id=%s); skipping DB writes",
+            getattr(user, "user_id", None),
+        )
         kafka_messages_success_total.inc()
         kafka_dry_run_messages_total.inc()
         return MessageProcessingResult(should_continue=True, success=True)
@@ -674,8 +689,8 @@ def process_principal_events_from_kafka(
 
     if dry_run:
         logger.warning(
-            "KAFKA SHADOW MODE: Messages will be processed but NO database writes will occur. "
-            "This is for validation only."
+            "KAFKA SHADOW MODE: Messages will be parsed without BOP and with NO database writes. "
+            "This is for consume/commit validation only."
         )
     bootstrap_service = bootstrap_service or get_tenant_bootstrap_service(OutboxReplicator())
 
@@ -717,8 +732,9 @@ def process_principal_events_from_kafka(
         "auto_offset_reset": "earliest",
         "enable_auto_commit": False,  # Manual commit for at-least-once semantics
         # No value_deserializer - leave as bytes to handle tombstones and UTF-8 errors in process_kafka_message
-        "consumer_timeout_ms": KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS,  # idle-poll stop; matches UMB
-        # Timeout tuning: 60s beat cycle + 15s drain must fit in session_timeout_ms without causing LeaveGroup
+        # idle-poll stop; aligned with wall-clock drain so a quiet topic ends the cycle promptly
+        "consumer_timeout_ms": settings.KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS,
+        # Timeout tuning: beat interval + drain must fit in session/max_poll without LeaveGroup
         "session_timeout_ms": settings.KAFKA_PRINCIPAL_CLEANUP_SESSION_TIMEOUT_MS,
         "heartbeat_interval_ms": settings.KAFKA_PRINCIPAL_CLEANUP_HEARTBEAT_INTERVAL_MS,
         "max_poll_interval_ms": settings.KAFKA_PRINCIPAL_CLEANUP_MAX_POLL_INTERVAL_MS,
@@ -763,14 +779,15 @@ def process_principal_events_from_kafka(
 
         # Wall-clock budget so a busy topic cannot keep this Celery task alive past the drain window.
         # consumer_timeout_ms alone only ends the iterator after idle polls.
-        drain_deadline = time.monotonic() + (KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS / 1000.0)
+        drain_timeout_ms = settings.KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS
+        drain_deadline = time.monotonic() + (drain_timeout_ms / 1000.0)
 
         # Process messages
         for message in consumer:
             if time.monotonic() >= drain_deadline:
                 logger.info(
                     "process_principal_events_from_kafka: Drain window of %dms elapsed, stopping cycle.",
-                    KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS,
+                    drain_timeout_ms,
                 )
                 break
 

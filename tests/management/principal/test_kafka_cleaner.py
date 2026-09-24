@@ -360,6 +360,7 @@ class PrincipalKafkaTests(IdentityRequest):
     @patch("management.principal.cleaner.time.monotonic")
     @patch("management.principal.cleaner.KafkaConsumer")
     @patch("management.principal.cleaner.settings.KAFKA_PRINCIPAL_CLEANUP_TOPIC", "test-topic")
+    @patch("management.principal.cleaner.settings.KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS", 15000)
     def test_kafka_consumer_stops_after_drain_window(self, consumer_mock, monotonic_mock, process_mock):
         """Busy topics must still stop after the wall-clock drain budget so Celery can re-check Unleash."""
         process_mock.return_value = MessageProcessingResult(should_continue=True, success=True)
@@ -618,6 +619,9 @@ class PrincipalKafkaTests(IdentityRequest):
         before_dry_run = REGISTRY.get_sample_value("kafka_dry_run_messages_total") or 0
         process_principal_events_from_kafka(dry_run=True)
         after_dry_run = REGISTRY.get_sample_value("kafka_dry_run_messages_total") or 0
+
+        # Dry-run must not call BOP (payload-only validation)
+        proxy_mock.assert_not_called()
 
         # Verify principal still exists (dry-run didn't delete it)
         self.assertTrue(Principal.objects.filter(username=principal_name).exists())
@@ -905,6 +909,8 @@ class PrincipalKafkaTests(IdentityRequest):
 
         # Verify update_user was NOT called
         mock_service.update_user.assert_not_called()
+        # Dry-run skips BOP as well
+        proxy_mock.assert_not_called()
 
     @patch(
         "management.principal.proxy.PrincipalProxy._request_principals",

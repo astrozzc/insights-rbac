@@ -56,13 +56,18 @@ app.conf.beat_schedule = {
     },
 }
 
-# Determine which principal cleanup method to use
-# If both UMB and Kafka are enabled, schedule a dispatcher task that checks Unleash flag at runtime
-# Otherwise, schedule the appropriate cleanup method directly
+# Determine which principal cleanup method to use.
+# When both UMB and Kafka are enabled, schedule them as *separate* beat entries so each
+# gets a full minute (shadow mode used to run them sequentially in one dispatcher task,
+# which let a busy UMB starve Kafka). Mode is still decided at runtime via Unleash.
 if settings.PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB and settings.PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA:
-    # Both are enabled - schedule dispatcher task that will check Unleash flag at runtime
-    app.conf.beat_schedule["principal-cleanup-every-minute"] = {
-        "task": "management.tasks.principal_cleanup_via_message_bus",
+    app.conf.beat_schedule["principal-cleanup-umb-every-minute"] = {
+        "task": "management.tasks.principal_cleanup_umb_tick",
+        "schedule": 60,  # Every 60 seconds
+        "args": [],
+    }
+    app.conf.beat_schedule["principal-cleanup-kafka-every-minute"] = {
+        "task": "management.tasks.principal_cleanup_kafka_tick",
         "schedule": 60,  # Every 60 seconds
         "args": [],
     }

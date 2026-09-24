@@ -165,8 +165,13 @@ Broker: Redis (`CELERY_BROKER_URL`). Config namespace: `CELERY_`.
 Scheduled tasks in `rbac/rbac/celery.py`:
 - `cross_account_cleanup` -- daily at midnight
 - `run_redis_cache_health` -- every 30 seconds
-- `principal_cleanup_via_umb` -- every 60 seconds (when UMB enabled)
-- `principal_cleanup` -- every 7 days (when UMB disabled)
+- `principal_cleanup_umb_tick` -- every 60 seconds (when both UMB + Kafka enabled; mode-aware)
+- `principal_cleanup_kafka_tick` -- every 60 seconds (when both UMB + Kafka enabled; mode-aware)
+- `principal_cleanup_via_umb` -- every 60 seconds (when only UMB enabled)
+- `principal_cleanup_via_kafka` -- every 60 seconds (when only Kafka enabled)
+- `principal_cleanup` -- every 7 days (fallback when neither message bus is enabled)
+
+When both UMB and Kafka are enabled, the tick tasks run as separate beat entries so each gets a full minute without one starving the other. Runtime mode (`umb_only`, `kafka_shadow`, `kafka_validation`, `kafka_active`) is still controlled by the Unleash feature flag; each tick checks the mode and skips if it is not responsible for that mode.
 
 Worker starts a Prometheus metrics server on Clowder's `metricsPort` (default 9000). Failure to start metrics server exits the process.
 
@@ -188,6 +193,8 @@ Env vars: `READ_YOUR_WRITES_WORKSPACE_ENABLED`, `READ_YOUR_WRITES_CHANNEL`, `REA
 | `IT_BYPASS_IT_CALLS` | `False` | Mocks IT service responses |
 | `MOCK_KAFKA` | `False` | Uses FakeKafkaProducer |
 | `PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB` | `False` | UMB-based principal cleanup |
+| `PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA` | `False` | Kafka-based principal cleanup |
+| `KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS` | `50000` | Wall-clock budget (ms) per Kafka cleanup cycle |
 | `READ_YOUR_WRITES_WORKSPACE_ENABLED` | `False` | Enables workspace create blocking |
 
 ## 12. Prometheus Metrics Conventions

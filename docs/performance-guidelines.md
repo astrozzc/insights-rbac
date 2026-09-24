@@ -111,8 +111,13 @@ Set `ATOMIC_RETRY_DISABLED=True` in test settings to skip `pgtransaction` wrappe
 |---|---|---|
 | `cross_account_cleanup` | Daily at midnight | Expire cross-account requests |
 | `run_redis_cache_health` | Every 30 seconds | Toggle caching on Redis failure |
-| `principal_cleanup_via_umb` | Every 60 seconds (if UMB enabled) | Process principal events from UMB |
-| `principal_cleanup` | Every 7 days (if UMB disabled) | Clean stale principals via BOP |
+| `principal_cleanup_umb_tick` | Every 60 seconds (if both UMB + Kafka enabled) | Mode-aware UMB principal cleanup tick |
+| `principal_cleanup_kafka_tick` | Every 60 seconds (if both UMB + Kafka enabled) | Mode-aware Kafka principal cleanup tick |
+| `principal_cleanup_via_umb` | Every 60 seconds (if UMB-only enabled) | Process principal events from UMB |
+| `principal_cleanup_via_kafka` | Every 60 seconds (if Kafka-only enabled) | Process principal events from Kafka |
+| `principal_cleanup` | Every 7 days (if neither UMB nor Kafka enabled) | Clean stale principals via BOP |
+
+When both UMB and Kafka are enabled, each gets its own independent beat entry so a busy UMB consumer cannot starve Kafka (or vice versa). The Unleash flag `rbac.principal-cleanup.use-kafka.enabled` controls which tick actually processes at runtime. The `KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS` setting (default 50 000 ms) caps the wall-clock budget per Kafka cycle, leaving headroom for consumer setup and shutdown within the 60-second beat interval.
 
 ### Task Guidelines
 
