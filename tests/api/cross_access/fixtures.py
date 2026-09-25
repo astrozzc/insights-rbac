@@ -68,8 +68,9 @@ class CrossAccountRequestTest(IdentityRequest):
         self.not_anemic_org_id = self.not_anemic_customer_data["org_id"]
         self.not_anemic_customer_data["account_id"] = self.not_anemic_account
         self.not_anemic_customer_data["tenant_name"] = f"acct{self.not_anemic_account}"
+        self.not_anemic_user_data = self._create_user_data()
         self.associate_not_anemic_request_context = self._create_request_context(
-            self.not_anemic_customer_data, self.user_1_data, is_org_admin=False, is_internal=True
+            self.not_anemic_customer_data, self.not_anemic_user_data, is_org_admin=False, is_internal=True
         )
         self.associate_not_anemic_request = self.associate_not_anemic_request_context["request"]
         self.not_anemic_headers = self.associate_not_anemic_request_context["request"].META
@@ -119,7 +120,7 @@ class CrossAccountRequestTest(IdentityRequest):
         self.role_8 = self.fixture.new_system_role(name="role_8")
 
         Principal.objects.create(
-            tenant=public_tenant, username=self.user_1_data["username"], user_id=self.user_1_data["user_id"]
+            tenant=self.tenant, username=self.user_1_data["username"], user_id=self.user_1_data["user_id"]
         )
         Principal.objects.create(tenant=public_tenant, username="2222222", user_id="2222222")
 

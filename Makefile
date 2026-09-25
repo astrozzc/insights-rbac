@@ -1,5 +1,7 @@
 PYTHON	= $(shell which python)
 
+.DEFAULT_GOAL := help
+
 TOPDIR  = $(shell pwd)
 PYDIR	= rbac
 
@@ -54,6 +56,22 @@ Please use `make <target>` where <target> is one of:
   docker-shell              run django and db containers with shell access to server (for pdb)
   docker-logs               connect to console logs for all services
   docker-grype				Run security checks on the project image(s)
+
+--- Commands using the local full Kessel stack ---
+  docker-local-full-up rbac=<source> rbac-config=<source> inventory=<source> hbi=<source>
+                            build and start the selected service sources
+                            source: local, upstream, a GitHub PR URL, or a commit SHA
+                            defaults: rbac=local, rbac-config=upstream, inventory=upstream, hbi=upstream
+                            prompts and saves local checkout paths per user
+  docker-local-full-health
+                            check full Kessel, RBAC, HBI, and endpoint health
+  docker-local-full-list-users
+                            list tenants, users, groups, roles, and bindings
+  docker-local-full-apply-users
+                            create users/groups/roles from a YAML fixture
+  docker-local-full-validate
+                            run all scripts below scripts/validations/
+  docker-local-full-down   stop full Kessel/HBI and legacy local RBAC containers
 
 --- Commands using an OpenShift Cluster ---
   oc-clean                 stop openshift cluster & remove local config data
@@ -297,6 +315,73 @@ docker-grype:
 docker-up:
 	@docker network ls --format '{{.Name}}' |grep -q  rbac-network > /dev/null 2>&1 && echo "" || docker network create rbac-network
 	docker-compose up --build -d
+
+docker-local-up:
+	docker compose -f docker-compose.local.yml up --build -d
+
+docker-local-down:
+	docker compose -f docker-compose.local.yml down
+
+docker-local-logs:
+	docker compose -f docker-compose.local.yml logs -f
+
+RBAC_SOURCE ?= local
+RBAC_CONFIG_SOURCE ?= upstream
+INVENTORY_SOURCE ?= upstream
+HBI_SOURCE ?= upstream
+ifneq ($(strip $(rbac)),)
+override RBAC_SOURCE := $(rbac)
+endif
+ifneq ($(strip $(rbac-config)),)
+override RBAC_CONFIG_SOURCE := $(rbac-config)
+endif
+ifneq ($(strip $(inventory)),)
+override INVENTORY_SOURCE := $(inventory)
+endif
+ifneq ($(strip $(hbi)),)
+override HBI_SOURCE := $(hbi)
+endif
+
+LEGACY_FULL_STACK_VARS := $(strip $(pr)$(local)$(rebuild)$(rbac_config_pr)$(rbac_config_repo)$(schema_zed_file))
+LEGACY_FULL_STACK_GOALS := $(filter local pr,$(MAKECMDGOALS))
+
+docker-local-full-up:
+	@if [ -n "$(LEGACY_FULL_STACK_VARS)$(LEGACY_FULL_STACK_GOALS)" ]; then \
+		echo "Legacy full-stack options are no longer supported; use rbac=<source> and rbac-config=<source>." >&2; \
+		exit 2; \
+	fi
+	RBAC_SOURCE="$(RBAC_SOURCE)" RBAC_CONFIG_SOURCE="$(RBAC_CONFIG_SOURCE)" \
+	INVENTORY_SOURCE="$(INVENTORY_SOURCE)" HBI_SOURCE="$(HBI_SOURCE)" \
+	./scripts/local_stack/up-full.sh
+
+.PHONY: docker-local-full-up
+.PHONY: docker-local-full-health
+docker-local-full-health:
+	./scripts/local_stack/health-full.sh
+
+.PHONY: docker-local-full-list-users
+docker-local-full-list-users:
+	./scripts/validations/api/actions/list-rbac-users.sh
+
+USERS_FILE ?= $(if $(strip $(file)),$(file),scripts/validations/api/actions/rbac-users.yaml)
+USERS_DRY_RUN ?= $(if $(strip $(dry-run)),$(dry-run),false)
+USERS_DELETE ?= $(if $(strip $(delete)),$(delete),false)
+
+.PHONY: docker-local-full-apply-users
+docker-local-full-apply-users:
+	./scripts/validations/api/actions/apply-rbac-users-config.sh --file "$(USERS_FILE)" \
+		$(if $(filter true 1 yes,$(USERS_DRY_RUN)),--dry-run,) \
+		$(if $(filter true 1 yes,$(USERS_DELETE)),--delete,)
+
+.PHONY: docker-local-full-validate
+docker-local-full-validate:
+	@set -e; for script in $$(find scripts/validations -type f -name '*.sh' | sort); do \
+		printf '\n==> %s\n' "$$script"; \
+		bash "$$script"; \
+	done
+
+docker-local-full-down:
+	./scripts/local_stack/down-full.sh
 
 docker-logs:
 	docker-compose logs -f

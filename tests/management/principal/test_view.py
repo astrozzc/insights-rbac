@@ -120,6 +120,9 @@ class PrincipalViewNonAdminTests(IdentityRequest):
 class PrincipalViewsetTests(IdentityRequest):
     """Test the principal viewset."""
 
+    # We match the principal we create below to avoid creating extra principals in IdentityHeaderMiddleware.
+    request_username = "test_user"
+
     def setUp(self):
         """Set up the principal viewset tests."""
         super().setUp()

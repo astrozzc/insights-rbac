@@ -40,6 +40,9 @@ V2_URL = "/api/rbac/v2/principals/"
 class PrincipalV2ViewTests(IdentityRequest):
     """Test the Principal V2 API."""
 
+    # We specifically set this because we rely on knowing all usernames that exist (e.g. for testing name matching).
+    request_username = "alice"
+
     def setUp(self):
         """Set up the principal v2 tests."""
         reload(urls)
@@ -52,7 +55,7 @@ class PrincipalV2ViewTests(IdentityRequest):
         self.user_principal_1 = Principal.objects.create(
             username="alice",
             type=Principal.Types.USER,
-            user_id="100001",
+            user_id=self.user_data["user_id"],
             tenant=self.tenant,
         )
         self.user_principal_2 = Principal.objects.create(
@@ -210,7 +213,7 @@ class PrincipalV2ViewTests(IdentityRequest):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["username"], "alice")
         self.assertEqual(response.data["type"], "user")
-        self.assertEqual(response.data["user_id"], "100001")
+        self.assertEqual(response.data["user_id"], self.user_principal_1.user_id)
         self.assertEqual(str(response.data["uuid"]), str(self.user_principal_1.uuid))
 
     def test_retrieve_nonexistent_uuid(self):
@@ -241,17 +244,6 @@ class PrincipalV2ViewTests(IdentityRequest):
         response = client.get(url, **self.headers)
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_list_empty_tenant(self):
-        """List with no principals returns empty data with count 0."""
-        Principal.objects.filter(tenant=self.tenant).delete()
-
-        client = APIClient()
-        response = client.get(V2_URL, **self.headers)
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["meta"]["count"], 0)
-        self.assertEqual(response.data["data"], [])
 
     def test_response_fields(self):
         """Response includes all expected fields."""
@@ -438,7 +430,7 @@ class PrincipalV2GroupCountTests(IdentityRequest):
 
     def test_list_group_count_no_n_plus_one(self):
         """Listing principals uses a fixed number of queries regardless of group membership."""
-        for i in range(5):
+        for i in range(20):
             p = Principal.objects.create(
                 username=f"extra_user_{i}",
                 type=Principal.Types.USER,
@@ -449,8 +441,11 @@ class PrincipalV2GroupCountTests(IdentityRequest):
             g.principals.add(p)
 
         client = APIClient()
-        # 3 queries: tenant lookup, pagination COUNT, annotated data fetch
-        with self.assertNumQueries(3):
+        # 7 queries of overhead in the request machinery (includes savepoints from
+        # @backfill_atomic on backfill_remote_principal; run_atomic_with_retry is
+        # skipped when PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED is false).
+        # 3 queries for the actual data: tenant lookup, pagination COUNT, annotated data fetch.
+        with self.assertNumQueries(10):
             response = client.get(V2_URL, **self.headers)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)

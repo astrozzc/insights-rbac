@@ -16,31 +16,32 @@
 #
 """Test Case extension to collect common test data."""
 
-import uuid
 import os
-
+import uuid
 from base64 import b64encode
 from json import dumps as json_dumps
+from typing import Optional
 from unittest.mock import Mock
 
-from django.test import TestCase, override_settings, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from faker import Faker
 
-from api.models import Tenant
 from api.common import RH_IDENTITY_HEADER
+from api.models import Tenant
 
 
 class BaseIdentityRequest:
     """Parent Class for IAM test cases."""
 
     fake = Faker()
+    request_username = None
 
     @classmethod
     def setUpClass(cls):
         """Set up each test class."""
         super().setUpClass()
         cls.customer_data = cls._create_customer_data()
-        cls.user_data = cls._create_user_data()
+        cls.user_data = cls._create_user_data(username=cls.request_username)
         cls.request_context = cls._create_request_context(cls.customer_data, cls.user_data)
         cls.tenant_name = cls.customer_data.get("tenant_name")
         cls.tenant = Tenant(
@@ -83,13 +84,16 @@ class BaseIdentityRequest:
         return customer
 
     @classmethod
-    def _create_user_data(cls):
+    def _create_user_data(cls, username: Optional[str] = None):
         """Create user data with unique username to avoid cache collisions between tests."""
         # Generate unique username by appending UUID to avoid cache collisions
         base_username = cls.fake.user_name()
-        unique_username = f"{base_username}_{uuid.uuid4().hex[:8]}"
+
+        if username is None:
+            username = f"ir-{base_username}_{uuid.uuid4().hex[:8]}"
+
         user_data = {
-            "username": unique_username,
+            "username": username,
             "email": cls.fake.email(),
             # We add a prefix to ensure we don't conflict with any hard-coded user IDs.
             "user_id": "ir-" + cls.fake.ean8(),

@@ -40,6 +40,9 @@ services:
 
   rbac-server:
     environment:
+      # Full-Kessel is a development stack. Keep Django from requiring a
+      # production secret key that is intentionally not checked into the repo.
+      DJANGO_DEBUG: "True"
       # The local VM exposes two CPUs, which otherwise starts four Gunicorn
       # workers and leaves too little memory for the rest of the stack.
       POD_CPU_LIMIT: "1"
@@ -49,6 +52,15 @@ services:
       READ_YOUR_WRITES_TIMEOUT_SECONDS: "30"
       SERVICE_PSKS: '{"inventory":{"secret":"local-dev-psk"}}'
 
+  rbac-migrate:
+    environment:
+      DJANGO_DEBUG: "True"
+      # rbac-migrate seeds platform roles with the same UUIDs used by
+      # rbac-server. The base compose file defines these only on rbac-server.
+      SYSTEM_DEFAULT_ROOT_WORKSPACE_ROLE_UUID: "23592f00-71f7-482d-be2c-e82eeb704406"
+      SYSTEM_DEFAULT_TENANT_ROLE_UUID: "d8e9d8c6-1edf-41b8-951d-805e9e701f49"
+      SYSTEM_ADMIN_ROOT_WORKSPACE_ROLE_UUID: "411ef1a0-75a8-4765-8e9f-377297e8ee28"
+      SYSTEM_ADMIN_TENANT_ROLE_UUID: "a62b9113-593d-471b-96aa-971d6e748a9b"
   inventory-api:
     # The full-kessel config permits unauthenticated gRPC transport but does
     # not set its compatibility option. The generated local config enables it
@@ -80,6 +92,7 @@ services:
 
   rbac-kafka-consumer:
     environment:
+      DJANGO_DEBUG: "True"
       # Partition fencing is implemented by Kessel Inventory, whose gRPC
       # listener is on 9081. Without this, settings.py defaults to localhost:9000.
       INVENTORY_API_SERVER: inventory-api:9081
@@ -93,6 +106,7 @@ services:
 
   rbac-worker:
     environment:
+      DJANGO_DEBUG: "True"
       READ_YOUR_WRITES_WORKSPACE_ENABLED: "True"
       READ_YOUR_WRITES_TIMEOUT_SECONDS: "30"
     # `celery status` starts a broker RPC for every probe and is unreliable
@@ -107,6 +121,8 @@ services:
   # The upstream check probes Celery workers, but beat is not a worker.
   # Keep the scheduler dependency meaningful by checking that its PID is alive.
   rbac-scheduler:
+    environment:
+      DJANGO_DEBUG: "True"
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s

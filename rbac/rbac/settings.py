@@ -71,17 +71,27 @@ GIT_COMMIT = ENVIRONMENT.get_value("GIT_COMMIT", default="local-dev")
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/2.0/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-# The SECRET_KEY is provided via an environment variable in OpenShift
-SECRET_KEY = os.getenv(
-    "DJANGO_SECRET_KEY",
-    # safe value used for development when DJANGO_SECRET_KEY might not be set
-    "asvuhxowz)zjbo4%7pc$ek1nbfh_-#%$bq_x8tkh=#e24825=5",
-)
-
 # SECURITY WARNING: don't run with debug turned on in production!
 # Default value: False
 DEBUG = False if os.getenv("DJANGO_DEBUG", "False") == "False" else True  # pylint: disable=R1719
+
+# SECURITY WARNING: keep the secret key used in production secret!
+# The SECRET_KEY is provided via an environment variable in OpenShift.
+# In non-DEBUG mode the key MUST be set explicitly; in DEBUG mode a random
+# key is generated so that local dev / test harnesses work without config.
+_secret_key = os.getenv("DJANGO_SECRET_KEY")
+# Note: empty string is intentionally treated as unset (bool("") is False),
+# so DJANGO_SECRET_KEY="" falls through to the DEBUG/error branch below.
+if _secret_key:
+    SECRET_KEY = _secret_key
+elif DEBUG:
+    from django.core.management.utils import get_random_secret_key
+
+    SECRET_KEY = get_random_secret_key()
+else:
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured("DJANGO_SECRET_KEY environment variable is required when DEBUG is False.")
 
 ALLOWED_HOSTS = ["*"]
 
@@ -546,6 +556,13 @@ KAFKA_PRINCIPAL_CLEANUP_MAX_POLL_INTERVAL_MS = ENVIRONMENT.get_value(
 KAFKA_PRINCIPAL_CLEANUP_STATIC_MEMBERSHIP_ENABLED = ENVIRONMENT.bool(
     "KAFKA_PRINCIPAL_CLEANUP_STATIC_MEMBERSHIP_ENABLED", default=True
 )
+# Wall-clock budget per Kafka principal-cleanup Celery cycle. Keep below the 60s beat interval
+# with headroom for consumer setup and shutdown.
+KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS = ENVIRONMENT.int("KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS", default=50000)
+# Max Kafka messages per BOP lookup. Duplicate user_ids within a batch are deduped.
+KAFKA_PRINCIPAL_CLEANUP_BOP_BATCH_SIZE = ENVIRONMENT.int("KAFKA_PRINCIPAL_CLEANUP_BOP_BATCH_SIZE", default=100)
+
+PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED = EPH_ENV
 
 # if we don't enable KAFKA we can't use the notifications
 if not KAFKA_ENABLED:
@@ -668,14 +685,6 @@ IT_TOKEN_JKWS_CACHE_LIFETIME = ENVIRONMENT.int("IT_TOKEN_JKWS_CACHE_LIFETIME", d
 
 PRINCIPAL_USER_DOMAIN = ENVIRONMENT.get_value("PRINCIPAL_USER_DOMAIN", default="localhost")
 
-# Settings for enabling/disabling deletion in principal cleanup job via UMB
-PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB = ENVIRONMENT.bool("PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB", default=False)
-PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB = ENVIRONMENT.bool("PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB", default=False)
-UMB_JOB_ENABLED = ENVIRONMENT.bool("UMB_JOB_ENABLED", default=True)
-
-UMB_HOST = ENVIRONMENT.get_value("UMB_HOST", default="localhost")
-UMB_PORT = ENVIRONMENT.get_value("UMB_PORT", default="61612")
-
 # Settings for enabling/disabling deletion in principal cleanup job via Kafka
 PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA = ENVIRONMENT.bool("PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA", default=False)
 PRINCIPAL_CLEANUP_UPDATE_ENABLED_KAFKA = ENVIRONMENT.bool("PRINCIPAL_CLEANUP_UPDATE_ENABLED_KAFKA", default=False)
@@ -710,6 +719,13 @@ if ENVIRONMENT.bool("CLOWDER_ENABLED", default=False):
             f"Falling back to default RELATION_API_SERVER value: {RELATION_API_SERVER}"
         )
 
+RELATIONS_API_CLIENT_ID = ENVIRONMENT.get_value("RELATION_API_CLIENT_ID", default="")
+RELATIONS_API_CLIENT_SECRET = ENVIRONMENT.get_value("RELATION_API_CLIENT_SECRET", default="")
+RELATIONS_API_TOKEN_URL = ENVIRONMENT.get_value(
+    "RELATIONS_API_TOKEN_URL",
+    default="https://sso.stage.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token",
+)
+
 INVENTORY_API_CLIENT_ID = ENVIRONMENT.get_value("INVENTORY_API_CLIENT_ID", default="")
 INVENTORY_API_CLIENT_SECRET = ENVIRONMENT.get_value("INVENTORY_API_CLIENT_SECRET", default="")
 INVENTORY_API_TOKEN_URL = ENVIRONMENT.get_value(
@@ -739,7 +755,7 @@ WORKSPACE_ACCESS_CHECK_V2_ENABLED = ENVIRONMENT.bool("WORKSPACE_ACCESS_CHECK_V2_
 USE_ROLE_BINDING_VIEW_PERMISSION = ENVIRONMENT.bool("USE_ROLE_BINDING_VIEW_PERMISSION", default=True)
 # When True, tenant-level role binding access checks use Kessel instead of org-admin middleware
 KESSEL_TENANT_AUTH_ENABLED = ENVIRONMENT.bool("KESSEL_TENANT_AUTH_ENABLED", default=False)
-READ_ONLY_API_MODE = ENVIRONMENT.get_value("READ_ONLY_API_MODE", default=False)
+READ_ONLY_API_MODE = ENVIRONMENT.bool("READ_ONLY_API_MODE", default=False)
 V2_EDIT_API_ENABLED = ENVIRONMENT.bool("V2_EDIT_API_ENABLED", default=False)
 V2_STRICT_ACCESS_CHECK_FLAG_APPLICATION_NAMES = [
     app.strip()
@@ -835,3 +851,5 @@ PRINCIPAL_CACHE_LIFETIME = ENVIRONMENT.int("PRINCIPAL_CACHE_LIFETIME", default=3
 DR_WORKSPACE_RECONCILE_ENABLED = ENVIRONMENT.bool("DR_WORKSPACE_RECONCILE_ENABLED", default=False)
 DR_WORKSPACE_TOPIC = ENVIRONMENT.str("DR_WORKSPACE_TOPIC", default="outbox.event.workspace")
 DR_KAFKA_CONSUMER_TIMEOUT_MS = ENVIRONMENT.int("DR_KAFKA_CONSUMER_TIMEOUT_MS", default=30000)
+
+ATOMIC_RETRY_DISABLED = ENVIRONMENT.bool("ATOMIC_RETRY_UNSAFELY_DISABLED", default=False)

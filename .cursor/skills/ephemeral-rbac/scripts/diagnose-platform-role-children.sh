@@ -37,10 +37,10 @@ print(f'Total child links: {total_children}')
 echo
 echo "--- SpiceDB child tuples (via Kessel read_tuples) ---"
 oc exec -n "$NS" "$POD" -c rbac-service -- python rbac/manage.py shell -c "
-from management.inventory_replicator.inventory_api_replicator import InventoryApiReplicator
+from management.relation_replicator.relations_api_replicator import RelationsApiReplicator
 from management.role.v2_model import RoleV2
 
-replicator = InventoryApiReplicator()
+replicator = RelationsApiReplicator()
 seeded = RoleV2.objects.filter(type='seeded').first()
 if seeded is None:
     print('  No seeded roles in DB')

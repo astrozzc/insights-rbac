@@ -1,0 +1,64 @@
+# Declarative local RBAC fixture.
+#
+# Apply with:
+#   scripts/validations/api/actions/apply-rbac-users-config.sh
+#
+# The command bootstraps each tenant, creates principals, groups, V2 custom
+# roles, and V2 role bindings. Re-running it reconciles the same named data.
+version: 1
+tenants:
+  - org_id: local-rbac-users
+    account_id: "10001"
+    bootstrap: true
+
+    users:
+      - username: local-admin
+        user_id: local-rbac-admin-10001
+        admin: true
+        groups:
+          - local-rbac-admins
+        role_bindings:
+          - role: local-inventory-reader
+            resource:
+              type: workspace
+              id: default
+
+      - username: local-reader
+        user_id: local-rbac-reader-10001
+        admin: false
+        groups:
+          - local-rbac-readers
+
+    groups:
+      - name: local-rbac-admins
+        description: Local RBAC administrators
+        members:
+          - local-admin
+        role_bindings:
+          - role: local-inventory-reader
+            resource:
+              type: workspace
+              id: default
+
+      - name: local-rbac-readers
+        description: Local RBAC read-only users
+        members:
+          - local-reader
+
+    roles:
+      - name: local-inventory-reader
+        description: Read inventory hosts in the default workspace
+        permissions:
+          - application: inventory
+            resource_type: hosts
+            operation: read
+
+    role_bindings:
+      # A binding can target one or more users or groups.
+      - role: local-inventory-reader
+        resource:
+          type: workspace
+          id: default
+        subjects:
+          - type: user
+            name: local-reader

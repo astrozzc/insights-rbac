@@ -17,23 +17,22 @@
 
 """Class to handle Dual Write API related operations."""
 
-import logging
 from typing import Iterable, Optional
 
 from management.atomic_transactions import atomic
-from management.group.inventory_api_dual_write_subject_handler import InventoryApiDualWriteSubjectHandler
-from management.inventory_replicator.inventory_replicator import (
-    DualWriteException,
-    InventoryReplicator,
+from management.group.relation_api_dual_write_subject_handler import RelationApiDualWriteSubjectHandler
+from management.models import Workspace
+from management.permission.scope_service import CONCRETE_SCOPES, ImplicitResourceService, Scope, TenantScopeResources
+from management.principal.model import Principal
+from management.relation_replicator.relation_replicator import (
     PartitionKey,
+    RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEvent,
     WorkspaceEventStream,
+    raise_dual_write_exception,
 )
-from management.models import Workspace
-from management.permission.scope_service import CONCRETE_SCOPES, ImplicitResourceService, Scope, TenantScopeResources
-from management.principal.model import Principal
 from management.role.model import BindingMapping, Role
 from management.role.v2_model import SeededRoleV2
 from management.role_binding.service import CreateBindingRequest, ExcludeSources, RoleBindingService
@@ -42,13 +41,11 @@ from management.tenant_mapping.v2_activation import TenantVersion
 
 from api.models import CrossAccountRequest, Tenant
 
-logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
+class _LocalReplicator(RelationReplicator):
+    _handler: "RelationApiDualWriteCrossAccessHandler"
 
-class _LocalReplicator(InventoryReplicator):
-    _handler: "InventoryApiDualWriteCrossAccessHandler"
-
-    def __init__(self, handler: "InventoryApiDualWriteCrossAccessHandler"):
+    def __init__(self, handler: "RelationApiDualWriteCrossAccessHandler"):
         self._handler = handler
 
     def replicate(self, event: ReplicationEvent):
@@ -59,17 +56,17 @@ class _LocalReplicator(InventoryReplicator):
         raise NotImplementedError("workspace events not unsupported")
 
 
-class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandler):
+class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler):
     """Class to handle Dual Write for cross account access bindings."""
 
     def __init__(
         self,
         cross_account_request: CrossAccountRequest,
         event_type: ReplicationEventType,
-        replicator: Optional[InventoryReplicator] = None,
+        replicator: Optional[RelationReplicator] = None,
         resource_service: Optional[ImplicitResourceService] = None,
     ):
-        """Initialize InventoryApiDualWriteCrossAccessHandler."""
+        """Initialize RelationApiDualWriteCrossAccessHandler."""
         if not self.replication_enabled():
             return
 
@@ -93,12 +90,13 @@ class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandle
                 replicator=replicator,
             )
         except Exception as e:
-            logger.error(
-                f"Error initializing InventoryApiDualWriteCrossAccessHandler for request id: "
-                f"{self.cross_account_request.request_id}"
+            raise_dual_write_exception(
+                e,
+                context=(
+                    "Error initializing RelationApiDualWriteCrossAccessHandler for request id: "
+                    f"{self.cross_account_request.request_id}"
+                ),
             )
-
-            raise DualWriteException(e)
 
     def _replicate(self):
         if not self.replication_enabled():
@@ -133,8 +131,7 @@ class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandle
                 ),
             )
         except Exception as e:
-            logger.error("Error occurred in cross account replicate event %s", e, exc_info=True)
-            raise DualWriteException(e)
+            raise_dual_write_exception(e, context="Error occurred in cross account replicate event")
 
     def replicate(self):
         """Replicate generated relations."""
@@ -235,7 +232,7 @@ class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandle
         """
         Remove roles for a CAR within a V1 tenant.
 
-        Please see the scary comment in InventoryApiDualWriteSubjectHandler._update_mapping_for_system_role before
+        Please see the scary comment in RelationApiDualWriteSubjectHandler._update_mapping_for_system_role before
         passing suppress_migration=True.
         """
         self._expect_v1_tenant()
@@ -312,7 +309,7 @@ class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandle
         """
         Generate relations to remove roles.
 
-        Please see the scary comment in InventoryApiDualWriteSubjectHandler._update_mapping_for_system_role about
+        Please see the scary comment in RelationApiDualWriteSubjectHandler._update_mapping_for_system_role about
         suppress_migration before passing
         suppress_v1_migration=True.
         """

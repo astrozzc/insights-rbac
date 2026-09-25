@@ -18,14 +18,12 @@
 
 import logging
 
-import pgtransaction
 from django.db import OperationalError
+from management.atomic_transactions import atomic_with_retry
 from management.tenant_mapping.v2_activation import ensure_v2_write_activated
 from psycopg2.errors import DeadlockDetected, SerializationFailure
 from rest_framework import status
 from rest_framework.response import Response
-
-from management.atomic_transactions import ISOLATION_LEVEL, is_atomic_disabled  # noqa: I100, I202
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +72,7 @@ class AtomicOperationsMixin:
         return None
 
     def _run_atomic(self, operation, request, *args, **kwargs):
-        if is_atomic_disabled():
-            ensure_v2_write_activated(request.tenant)
-            return operation(request, *args, **kwargs)
-
-        @pgtransaction.atomic(isolation_level=ISOLATION_LEVEL, retry=self.atomic_retry)
+        @atomic_with_retry(self.atomic_retry)
         def atomic_operation():
             ensure_v2_write_activated(request.tenant)
             return operation(request, *args, **kwargs)

@@ -2,7 +2,7 @@
 # =============================================================================
 # zed_local.sh — Zed CLI for local Docker + stage Kessel SpiceDB
 #
-# Pairs with scripts/create_workspace_local.sh. Zed talks to SpiceDB (gRPC on
+# Pairs with scripts/validations/api/create-workspace.sh. Zed talks to SpiceDB (gRPC on
 # localhost:50051), not the Relations API (localhost:9000). Both port-forwards
 # target the same stage cluster.
 #
@@ -11,6 +11,7 @@
 #   ./scripts/zed_local.sh ensure-forwards    # start oc port-forwards if ports closed
 #   ./scripts/zed_local.sh status             # ports, zed context, credentials
 #   ./scripts/zed_local.sh check rbac/workspace:<id> view rbac/principal:redhat/1111111
+#   ./scripts/zed_local.sh schema             # print the schema loaded by local SpiceDB
 #   ./scripts/zed_local.sh read-workspace <workspace_uuid>
 #   ./scripts/zed_local.sh verify-results <results.json>
 #   ./scripts/zed_local.sh <any zed subcommand...>  # passthrough with context
@@ -20,12 +21,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PIDS_DIR="$SCRIPT_DIR/.create_workspace_local_pids"
+PIDS_DIR="$SCRIPT_DIR/.create_workspace_pids"
 CONFIG_FILE="$PROJECT_DIR/.cursor/skills/config.env"
 
 ZED_CONTEXT_NAME="${ZED_CONTEXT_NAME:-kessel-local}"
 SPICEDB_HOST="${SPICEDB_HOST:-localhost}"
 SPICEDB_PORT="${SPICEDB_PORT:-50051}"
+LOCAL_KESSEL_ENV_FILE="${LOCAL_KESSEL_ENV_FILE:-}"
 KESSEL_HOST="${KESSEL_HOST:-localhost}"
 KESSEL_PORT="${KESSEL_PORT:-9000}"
 OC_PROJECT="${OC_PROJECT:-kessel-stage}"
@@ -42,6 +44,51 @@ require_zed() {
         log-err "zed CLI not found. Install: https://github.com/authzed/zed"
         exit 1
     fi
+}
+
+local_spicedb_is_running() {
+    local runtime
+    for runtime in podman docker; do
+        command -v "$runtime" &>/dev/null || continue
+        if [ "$("$runtime" container inspect --format '{{.State.Running}}' full-kessel-spicedb-1 2>/dev/null)" = "true" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+resolve_spicedb_token() {
+    SPICEDB_TOKEN_SOURCE=""
+    RESOLVED_SPICEDB_TOKEN=""
+
+    if [ -n "${ZED_SPICEDB_PSK:-}" ]; then
+        RESOLVED_SPICEDB_TOKEN="$ZED_SPICEDB_PSK"
+        SPICEDB_TOKEN_SOURCE="ZED_SPICEDB_PSK"
+        return 0
+    fi
+
+    # Do not read a local token while connected to a stage port-forward. The
+    # local container check ensures this fallback is only for the Podman/Docker
+    # full-Kessel stack.
+    local_spicedb_is_running || return 1
+
+    local env_file token
+    local env_files=(
+        "$LOCAL_KESSEL_ENV_FILE"
+        "${INVENTORY_API_REPO:-}/development/full-kessel/.env"
+        "$(dirname "$PROJECT_DIR")/inventory-api/development/full-kessel/.env"
+        "$PROJECT_DIR/.local-deps/inventory-api/development/full-kessel/.env"
+    )
+    for env_file in "${env_files[@]}"; do
+        [ -n "$env_file" ] && [ -r "$env_file" ] || continue
+        token=$(awk -F= '$1 == "SPICEDB_GRPC_PRESHARED_KEY" {print substr($0, index($0, "=") + 1); exit}' "$env_file")
+        if [ -n "$token" ]; then
+            RESOLVED_SPICEDB_TOKEN="$token"
+            SPICEDB_TOKEN_SOURCE="local full-Kessel configuration"
+            return 0
+        fi
+    done
+    return 1
 }
 
 port_open() {
@@ -139,10 +186,10 @@ cmd_ensure_forwards() {
 cmd_setup() {
     require_zed
 
-    if [ -z "${ZED_SPICEDB_PSK:-}" ]; then
+    if ! resolve_spicedb_token; then
         load_openshift_console_hint
-        log-err "ZED_SPICEDB_PSK is not set."
-        log-err "Export the stage SpiceDB PSK from Vault (see .cursor/skills/zed/SKILL.md)."
+        log-err "No local SpiceDB token or ZED_SPICEDB_PSK is available."
+        log-err "Start the local full-Kessel stack, or export the stage SpiceDB PSK from Vault (see .cursor/skills/zed/SKILL.md)."
         exit 1
     fi
 
@@ -150,10 +197,10 @@ cmd_setup() {
 
     # Use environment variables instead of CLI arguments to avoid
     # exposing the PSK in process listings (/proc/*/cmdline)
-    export ZED_TOKEN="$ZED_SPICEDB_PSK"
+    export ZED_TOKEN="$RESOLVED_SPICEDB_TOKEN"
     export ZED_ENDPOINT="${SPICEDB_HOST}:${SPICEDB_PORT}"
     export ZED_INSECURE=true
-    log-info "Zed env configured -> ${SPICEDB_HOST}:${SPICEDB_PORT}"
+    log-info "Zed env configured from ${SPICEDB_TOKEN_SOURCE} -> ${SPICEDB_HOST}:${SPICEDB_PORT}"
 }
 
 cmd_status() {
@@ -173,10 +220,10 @@ cmd_status() {
 
     echo "Zed:"
     zed context list 2>/dev/null || true
-    if [ -n "${ZED_SPICEDB_PSK:-}" ]; then
-        echo "  ZED_SPICEDB_PSK: set"
+    if resolve_spicedb_token; then
+        echo "  SpiceDB token: ${SPICEDB_TOKEN_SOURCE}"
     else
-        echo "  ZED_SPICEDB_PSK: not set"
+        echo "  SpiceDB token: unavailable"
     fi
 
     echo "Port-forward PIDs:"
@@ -254,6 +301,12 @@ cmd_check() {
     zed permission check "$@"
 }
 
+cmd_schema() {
+    require_zed
+    cmd_setup
+    zed schema read
+}
+
 cmd_passthrough() {
     require_zed
     cmd_setup
@@ -268,22 +321,27 @@ Commands:
   setup              Configure zed context '$ZED_CONTEXT_NAME' (SpiceDB on ${SPICEDB_HOST}:${SPICEDB_PORT})
   ensure-forwards    oc port-forward Relations API + SpiceDB if ports are closed
   status             Show port, credential, and port-forward status
+  schema             Print the schema loaded by SpiceDB
   read-workspace ID  zed relationship read rbac/workspace:ID
-  verify-results F   Verify workspaces from create_workspace_local JSON results
+  verify-results F   Verify workspaces from create-workspace JSON results
   check ARGS...      zed permission check ARGS (with local context)
   help               Show this help
 
 Any other invocation runs: zed <args> with context '$ZED_CONTEXT_NAME'.
 
 Environment:
-  ZED_SPICEDB_PSK     SpiceDB PSK token (required for setup)
+  ZED_SPICEDB_PSK       SpiceDB PSK token for a stage port-forward
+  LOCAL_KESSEL_ENV_FILE Local full-Kessel .env file containing the PSK
   ZED_CONTEXT_NAME    Zed context name (default: kessel-local)
   SPICEDB_HOST/PORT     SpiceDB port-forward target (default: localhost:50051)
   KESSEL_HOST/PORT      Relations API port-forward (default: localhost:9000)
   OC_PROJECT            OpenShift project (default: kessel-stage)
 
 Used with:
-  ./scripts/create_workspace_local.sh --zed
+  ./scripts/validations/api/create-workspace.sh --zed
+
+When full-kessel is running locally, the token is read automatically from its
+.env file. No Vault setup is required.
 EOF
 }
 
@@ -311,6 +369,9 @@ main() {
             ;;
         check)
             cmd_check "$@"
+            ;;
+        schema)
+            cmd_schema
             ;;
         help|-h|--help)
             show_help

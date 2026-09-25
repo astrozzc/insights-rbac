@@ -28,9 +28,9 @@ from django.utils import timezone
 from internal.integration import chrome_handlers
 from internal.integration import sync_handlers
 from management.cache import AccessCache, skip_purging_cache_for_public_tenant
-from management.inventory_replicator.types import RelationTuple
 from management.principal.model import Principal
 from management.rbac_fields import AutoDateTimeField
+from management.relation_replicator.types import RelationTuple
 from management.role.model import Role
 from migration_tool.utils import create_relationship
 
@@ -87,8 +87,13 @@ class Group(TenantAwareModel):
         return self.roles().prefetch_related("access")
 
     def role_count(self):
-        """Role count for a group."""
-        return self.roles().count()
+        """Role count for a group, derived from V2 RoleBindingGroup entries."""
+        return (
+            self.role_binding_entries.filter(binding__tenant_id=self.tenant_id)
+            .values("binding__role")
+            .distinct()
+            .count()
+        )
 
     def platform_default_set():
         """Queryset for platform default group."""

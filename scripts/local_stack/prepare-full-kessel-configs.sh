@@ -10,6 +10,10 @@ prepare_full_kessel_configs() {
   local compose_dir="${inventory_api_repo}/development/full-kessel"
   local env_file="${compose_dir}/.env"
   local requested_rbac_image="${RBAC_IMAGE:-}"
+  local requested_schema_zed_file="${SCHEMA_ZED_FILE:-}"
+  local requested_schema_zed_url="${SCHEMA_ZED_URL:-}"
+  local requested_rbac_config_file="${RBAC_CONFIG_FILE:-}"
+  local requested_rbac_config_url="${RBAC_CONFIG_URL:-}"
 
   if [[ -f "${env_file}" ]]; then
     set -a
@@ -20,6 +24,13 @@ prepare_full_kessel_configs() {
   if [[ -n "${requested_rbac_image}" ]]; then
     export RBAC_IMAGE="${requested_rbac_image}"
   fi
+  # inventory-api's .env provides stage defaults.  Preserve a caller-selected
+  # rbac-config PR or local generated schema instead of letting those defaults
+  # replace it while loading the Compose environment.
+  [[ -n "${requested_schema_zed_file}" ]] && export SCHEMA_ZED_FILE="${requested_schema_zed_file}"
+  [[ -n "${requested_schema_zed_url}" ]] && export SCHEMA_ZED_URL="${requested_schema_zed_url}"
+  [[ -n "${requested_rbac_config_file}" ]] && export RBAC_CONFIG_FILE="${requested_rbac_config_file}"
+  [[ -n "${requested_rbac_config_url}" ]] && export RBAC_CONFIG_URL="${requested_rbac_config_url}"
 
   local schema_dest="${compose_dir}/configs/schema.zed"
   local local_config_dir="${TMPDIR:-/tmp}/insights-rbac-full-kessel"
@@ -40,7 +51,7 @@ prepare_full_kessel_configs() {
     log-info "Using local schema file: ${SCHEMA_ZED_FILE}"
     cp "${SCHEMA_ZED_FILE}" "${schema_dest}"
   else
-    local schema_url="${SCHEMA_ZED_URL:-https://raw.githubusercontent.com/project-kessel/rbac-config/823c1231a849e54c0488b13d56375ef15fdc18b3/configs/stage/schemas/schema.zed}"
+    local schema_url="${SCHEMA_ZED_URL:-https://raw.githubusercontent.com/project-kessel/rbac-config/refs/heads/master/configs/stage/schemas/schema.zed}"
     log-info "Downloading schema.zed from ${schema_url}"
     curl -fsSL -o "${schema_dest}" "${schema_url}"
   fi
@@ -55,7 +66,7 @@ prepare_full_kessel_configs() {
     log-info "Using local RBAC config: ${RBAC_CONFIG_FILE}"
     rbac_config_src="${RBAC_CONFIG_FILE}"
   else
-    local rbac_config_url="${RBAC_CONFIG_URL:-https://raw.githubusercontent.com/project-kessel/rbac-config/823c1231a849e54c0488b13d56375ef15fdc18b3/_private/configmaps/stage/rbac-config.yml}"
+    local rbac_config_url="${RBAC_CONFIG_URL:-https://raw.githubusercontent.com/project-kessel/rbac-config/refs/heads/master/_private/configmaps/stage/rbac-config.yml}"
     _tmp_rbac_config="$(mktemp)"
     rbac_config_src="${_tmp_rbac_config}"
     log-info "Downloading RBAC role definitions from ${rbac_config_url}"

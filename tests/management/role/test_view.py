@@ -18,47 +18,48 @@
 
 import json
 from typing import Optional
+from unittest.mock import ANY, Mock, call, patch
 from uuid import uuid4
+
 from django.conf import settings
 from django.core.serializers.json import DjangoJSONEncoder
 from django.test.utils import override_settings
-from django.urls import reverse, resolve
-from rest_framework import status
-from rest_framework.test import APIClient
-from api.models import Tenant
+from django.urls import resolve, reverse
 from management.cache import TenantCache
 from management.models import (
-    Group,
-    Permission,
-    Principal,
-    Role,
     Access,
-    Policy,
-    ResourceDefinition,
+    BindingMapping,
     ExtRoleRelation,
     ExtTenant,
+    Group,
+    Permission,
+    Policy,
+    Principal,
+    ResourceDefinition,
+    Role,
     Workspace,
-    BindingMapping,
 )
-from management.inventory_replicator.noop_replicator import NoopReplicator
+from management.relation_replicator.noop_replicator import NoopReplicator
 from management.role.v2_model import CustomRoleV2
 from management.role_binding.model import RoleBinding
 from management.tenant_service.v2 import V2TenantBootstrapService
 from migration_tool.in_memory_tuples import (
-    all_of,
     InMemoryRelationReplicator,
     InMemoryTuples,
+    all_of,
     relation,
     resource,
-    subject,
     resource_type,
+    subject,
 )
-
+from rest_framework import status
+from rest_framework.test import APIClient
 from tests.core.test_kafka import copy_call_args
 from tests.identity_request import IdentityRequest
-from tests.util import assert_v1_v2_tuples_fully_consistent, assert_v1_v2_locally_consistent
+from tests.util import assert_v1_v2_locally_consistent, assert_v1_v2_tuples_fully_consistent
 from tests.v2_util import bootstrap_tenant_for_v2_test
-from unittest.mock import ANY, patch, call, Mock
+
+from api.models import Tenant
 
 URL = reverse("v1_management:role-list")
 
@@ -468,7 +469,7 @@ class RoleViewsetTests(IdentityRequest):
                 ANY,
             )
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     def test_create_role_with_display_success(self, mock_method):
         """Test that we can create a role."""
         role_name = "roleD"
@@ -1009,7 +1010,7 @@ class RoleViewsetTests(IdentityRequest):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": False,
                     "is_internal": False,
                     "user_id": 52567473,
@@ -1108,7 +1109,7 @@ class RoleViewsetTests(IdentityRequest):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": True,
                     "is_internal": False,
                     "user_id": 52567473,
@@ -1181,7 +1182,7 @@ class RoleViewsetTests(IdentityRequest):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": True,
                     "is_internal": False,
                     "user_id": 52567473,
@@ -1342,7 +1343,7 @@ class RoleViewsetTests(IdentityRequest):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": True,
                     "is_internal": False,
                     "user_id": 52567473,
@@ -1623,7 +1624,7 @@ class RoleViewsetTests(IdentityRequest):
         response = client.put(url, test_data, format="json", **self.headers)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     def test_update_role(self, mock_method):
         """Test that updating a role with an invalid permission returns an error."""
         # Set up
@@ -1689,7 +1690,7 @@ class RoleViewsetTests(IdentityRequest):
         ROOT_SCOPE_PERMISSIONS="inventory:*:*",
         TENANT_SCOPE_PERMISSIONS="",
     )
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_update_role_scoped(self, replicate):
         """Test that updating a role properly updates its scope."""
         tuples = InMemoryTuples()
@@ -1771,7 +1772,7 @@ class RoleViewsetTests(IdentityRequest):
     @override_settings(
         ROLE_CREATE_ALLOW_LIST="inventory", REPLICATION_TO_RELATION_ENABLED=True, REMOVE_NULL_VALUE=True
     )
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_update_role_with_null_value(self, replicate):
         """Test that updating a role with a null value success."""
         tuples = InMemoryTuples()
@@ -1967,7 +1968,7 @@ class RoleViewsetTests(IdentityRequest):
             f"Permission does not exist: {permission}",
         )
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     def test_delete_role(self, mock_method):
         """Test that we can delete an existing role."""
         role_name = "roleA"
@@ -2097,7 +2098,7 @@ class RoleViewsetTests(IdentityRequest):
         response = client.get(url, **self.headers)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-    @patch("management.role.inventory_api_dual_write_handler.OutboxReplicator.replicate")
+    @patch("management.role.relation_api_dual_write_handler.OutboxReplicator.replicate")
     def test_delete_custom_role_without_bindingmappins(self, replicate_mock):
         role_name = "role_without_bindingmapping"
         access_data = []
@@ -2162,7 +2163,7 @@ class RoleViewsetTests(IdentityRequest):
         response = client.delete(url, **self.headers)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     def test_delete_role_child_workspace(self, mock_method):
         """Test that we can delete an existing role bound to a child workspace.
 
@@ -2424,7 +2425,7 @@ class RoleViewsetTests(IdentityRequest):
     @override_settings(
         ROLE_CREATE_ALLOW_LIST="inventory", REPLICATION_TO_RELATION_ENABLED=True, REMOVE_NULL_VALUE=True
     )
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_create_role_with_null_value(self, replicate):
         """Test that create a role with a null value success."""
         tuples = InMemoryTuples()

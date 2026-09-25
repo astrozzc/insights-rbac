@@ -15,11 +15,11 @@ The pool's `max_connections` must match `GUNICORN_THREAD_LIMIT` (default 10).
 | `AccessCache` | `rbac::policy::tenant={org_id}::user={uuid}` | `ACCESS_CACHE_LIFETIME` (600s) | JSON (hset) |
 | `PrincipalCache` | `rbac::principal::{org_id}::{username}` | `PRINCIPAL_CACHE_LIFETIME` (3600s) | pickle |
 | `JWKSCache` | `rbac::jwks::response` | `IT_TOKEN_JKWS_CACHE_LIFETIME` (28800s) | JSON |
+| `JWTCache` | `rbac::jwt::relations` | `IT_TOKEN_JKWS_CACHE_LIFETIME` (28800s) | string |
 
 ### Cache Rules
 
-- **Every `get_cached()` call does a health check ping.** For high-throughput paths (Kafka consumers), prefer a cache subclass that skips the ping where one exists.
-- **Inventory API OAuth2 tokens are cached in-process, not in Redis.** `management/utils.py`'s `inventory_auth_credentials` (a `kessel.auth.OAuth2ClientCredentials`) handles token fetch/refresh/caching internally (thread-safe, 300s refresh buffer). Build gRPC auth metadata via `get_inventory_auth_metadata()` rather than any Redis-backed JWT cache.
+- **Every `get_cached()` call does a health check ping.** For high-throughput paths (Kafka consumers), use `JWTCacheOptimized` which skips the ping.
 - **Signal-driven invalidation** is the primary cache-busting mechanism. Changes to `Role`, `Access`, `ResourceDefinition`, `Policy`, `Group` membership all trigger cache deletes via Django signals. These signals are gated by `ACCESS_CACHE_ENABLED` and `ACCESS_CACHE_CONNECT_SIGNALS`.
 - **Platform-default group changes flush the entire tenant's policy cache** (`delete_all_policies_for_tenant`). Non-default changes only flush affected principal UUIDs. Be aware that `scan_iter` with `BATCH_DELETE_SIZE=1000` is used for tenant-wide deletes.
 - **PrincipalCache** is used in `management/utils.py:get_principal()`. Always call `cache_principal()` after creating or fetching a principal from the DB to keep the cache warm.
@@ -111,8 +111,10 @@ Set `ATOMIC_RETRY_DISABLED=True` in test settings to skip `pgtransaction` wrappe
 |---|---|---|
 | `cross_account_cleanup` | Daily at midnight | Expire cross-account requests |
 | `run_redis_cache_health` | Every 30 seconds | Toggle caching on Redis failure |
-| `principal_cleanup_via_umb` | Every 60 seconds (if UMB enabled) | Process principal events from UMB |
-| `principal_cleanup` | Every 7 days (if UMB disabled) | Clean stale principals via BOP |
+| `principal_cleanup_via_kafka` | Every 60 seconds (if `KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED`) | Process principal events from Kafka |
+| `principal_cleanup` | Every 7 days (if Kafka cleanup disabled) | Clean stale principals via BOP |
+
+The `KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS` setting (default 50 000 ms) caps the wall-clock budget per Kafka cycle, leaving headroom for consumer setup and shutdown within the 60-second beat interval.
 
 ### Task Guidelines
 
@@ -122,16 +124,18 @@ Set `ATOMIC_RETRY_DISABLED=True` in test settings to skip `pgtransaction` wrappe
 
 ## Pagination
 
+See the full per-endpoint matrix and rationale in [api-contracts-guidelines.md](api-contracts-guidelines.md#pagination).
+
 ### v1: LimitOffsetPagination
 
 `StandardResultsSetPagination` -- default limit 10, max 1000. Provides `first`/`next`/`previous`/`last` links.
 
 ### v2: Dual Strategy
 
-- **`V2ResultsSetPagination`** (LimitOffset) for workspaces and simple lists. Supports `limit=-1` to disable pagination (fetches count first).
-- **`V2CursorPagination`** for role-bindings and roles. Better for large datasets -- no COUNT query. Default page size 10, max 1000. Dynamic ordering via `order_by` query param with dot notation (`role.name`, `group.modified`).
+- **`V2ResultsSetPagination`** (LimitOffset) for workspaces, principals, and other bounded lists. Default limit 10, max 1000. `WorkspacePagination` subclass raises max to 3000 for workspace endpoints. Supports `limit=-1` to disable pagination (fetches count first).
+- **`V2CursorPagination`** for role-bindings and **`RoleV2CursorPagination`** for roles. Better for large datasets -- no COUNT query. Default page size 10, max 1000. Role bindings use dot-notation `order_by` for cross-relation ordering (`role.name`, `group.modified`). Roles use plain field names (`name`, `last_modified`).
 
-When using `limit=-1`, `V2ResultsSetPagination` calls `queryset.count()` to set `default_limit`. This is an extra query -- acceptable for small datasets but avoid for large ones.
+When using `limit=-1`, `V2ResultsSetPagination` calls `queryset.count()` to set `default_limit`. This is an extra query -- acceptable for small/bounded datasets (workspaces, principals) but avoid for large ones (roles, role-bindings).
 
 ## Gunicorn Configuration
 

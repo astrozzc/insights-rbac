@@ -51,6 +51,190 @@ make run-migrations      # Apply database migrations
 make serve               # App available at http://localhost:8000
 ```
 
+### Option 3: Full Kessel and Host Inventory integration stack
+
+Start RBAC with Kessel Inventory, Kessel Relations, SpiceDB, Kafka, Debezium,
+and Host Inventory:
+
+```bash
+make docker-local-full-up rbac=local rbac-config=upstream
+```
+
+Check that the full-stack containers and published endpoints are healthy:
+
+```bash
+make docker-local-full-health
+```
+
+The command builds `insights-rbac-local:dev`, uses Docker or Podman Compose,
+and resolves the upstream Kessel Inventory and Host Inventory checkouts under
+`.local-deps/`. If either checkout is absent, it creates a shallow clone.
+Ensure the container VM has enough memory for the full stack.
+
+Each deployment also loads four idempotent local identities in organization
+`local-full-stack` / account `10001`: `local-v1-org-admin`,
+`local-v1-non-org-admin`, `local-v2-org-admin`, and `local-v2-non-admin`. The
+two `*-org-admin` users have
+`admin: true`; the other two are non-admin users. Set
+`FULL_STACK_LOAD_DEFAULT_USERS=false` to disable this local fixture.
+
+#### Source selection
+
+Select the RBAC, `rbac-config`, Kessel Inventory, and HBI sources directly on
+the command line:
+
+| Source | Meaning |
+| --- | --- |
+| `local` | Current checkout by default; prompts for or accepts a custom local path |
+| `upstream` | Latest changes from the hard-coded upstream repository |
+| `<GitHub PR URL>` | Source fetched from the specified pull request |
+| `<commit SHA>` | Source fetched at the specified commit |
+
+The hard-coded upstream repositories are
+[insights-rbac](https://github.com/project-kessel/insights-rbac),
+[rbac-config](https://github.com/project-kessel/rbac-config),
+[inventory-api](https://github.com/project-kessel/inventory-api), and
+[insights-host-inventory](https://github.com/RedHatInsights/insights-host-inventory).
+
+Examples:
+
+```bash
+make docker-local-full-up rbac=local rbac-config=upstream
+make docker-local-full-up rbac=upstream rbac-config=upstream
+make docker-local-full-up rbac=<rbac-commit-sha> rbac-config=<config-commit-sha>
+make docker-local-full-up \
+  rbac=https://github.com/project-kessel/insights-rbac/pull/3309 \
+  rbac-config=https://github.com/project-kessel/rbac-config/pull/123
+make docker-local-full-up inventory=local hbi=local
+make docker-local-full-up \
+  inventory=https://github.com/project-kessel/inventory-api/pull/123 \
+  hbi=https://github.com/RedHatInsights/insights-host-inventory/pull/456
+```
+
+For `rbac-config=local`, the default sibling checkout at `../rbac-config` is
+used. It must contain the stage ConfigMap; the command compiles its stage KSL
+schema with `ksl-test-schema-stage` before starting the stack.
+
+When a local source is selected, the command asks for its checkout directory.
+Press Enter to use the default. The selected paths are saved in the
+user-local configuration file and reused on the next run:
+
+```bash
+make docker-local-full-up rbac=local rbac-config=local
+```
+
+The saved path file is `$XDG_CONFIG_HOME/insights-rbac/local-stack.env`, or
+`~/.config/insights-rbac/local-stack.env` when `XDG_CONFIG_HOME` is not set.
+
+The default local directories for Kessel Inventory and HBI are
+`.local-deps/inventory-api` and `.local-deps/insights-host-inventory`.
+
+If the Docker stack is already running, the command rebuilds and recreates the
+services affected by the selected sources and prints a deployment summary.
+For example, rerunning the local command rebuilds RBAC and the selected local
+or fetched service sources.
+
+##### Run the basic V2 API validation
+
+After the stack is healthy, run the basic V2 API lifecycle validation:
+
+```bash
+scripts/validations/api/v2-crud.sh
+```
+
+The validator requires no identity setup. It exercises every V2 API route:
+workspace CRUD/query/move, role CRUD, role-binding create/read/update, and the
+read-only principal routes. It temporarily enables V2 writes and adds the
+minimum local Kessel authorization tuples, then removes its test resources and
+restores the original V2-write setting and Kessel graph. It prints the direct
+Kessel tuples for read-only scenarios and verifies the expected persisted tuple
+after every write; deletion checks verify that the tuple disappears.
+
+The validator creates a temporary user from an in-memory YAML fixture in
+`org_id=11111` with a unique `v2-crud-user-<timestamp>-<pid>` identity. It
+deletes that user, its temporary role, and its binding during cleanup. The
+workspace RYW validation uses `local-v2-org-admin` by default. Select one of
+the four loaded identities with `--user`; the full mapping is listed in the
+[local Docker/Podman validation guide](docs/local-docker-validation.md).
+The full stack includes HBI, but the current RYW helper validates the RBAC
+workspace path only; `--check-hbi` is informational until an HBI assertion is
+implemented.
+
+To inspect the organizations, persisted users/principals, V2 roles, and role
+bindings in the running RBAC container, run the read-only action:
+
+```bash
+scripts/validations/api/actions/list-rbac-users.sh
+# or
+make docker-local-full-list-users
+```
+
+To call the individual read-only API list endpoints, use the scripts below.
+They default to `local-v2-org-admin`; the only supported parameter is the
+loaded user identity:
+
+```bash
+scripts/validations/api/list-v1-roles.sh --user local-v1-org-admin
+scripts/validations/api/list-v1-groups.sh --user local-v1-non-org-admin
+scripts/validations/api/list-v2-roles.sh --user local-v2-org-admin
+scripts/validations/api/list-v2-principals.sh --user local-v2-non-admin
+scripts/validations/api/list-v2-workspaces.sh --user local-v2-org-admin
+scripts/validations/api/list-v2-role-bindings.sh --user local-v2-org-admin
+```
+
+The same action can generate a local admin or non-admin identity for V1 or V2
+API testing; see the [local Docker/Podman validation guide](docs/local-docker-validation.md).
+
+To create persisted local users, bootstrap a tenant, and configure groups,
+V2 roles, and role bindings, follow the [local user and group management
+guide](docs/local-docker-validation.md#manage-local-users-and-groups):
+
+```bash
+scripts/validations/api/actions/apply-rbac-users-config.sh
+# or
+make docker-local-full-apply-users file=/tmp/local-rbac-users.yaml
+```
+
+##### Run every local validation
+
+Run every shell validation below `scripts/validations/` in lexical order. The
+command stops at the first failure:
+
+```bash
+make docker-local-full-validate
+```
+
+See [Local Validation Script Guidelines](docs/validation-script-guidelines.md)
+when adding a validation for a new feature.
+
+For the complete local Docker/Podman startup and validation workflow, see the
+[Local Docker/Podman validation guide](docs/local-docker-validation.md).
+
+Useful endpoints after startup:
+
+| Service | Endpoint |
+| --- | --- |
+| RBAC API and metrics | http://localhost:9080 and http://localhost:9080/metrics |
+| Kessel Relations API | http://localhost:9000 |
+| Kessel Inventory API | http://localhost:9081 |
+| Kafka Connect | http://localhost:8083 |
+| Host Inventory API | http://localhost:8080 |
+
+Verify a workspace create, the RBAC Read-Your-Writes notification, and that
+the workspace is visible through Kessel Inventory, which Host Inventory uses
+as its workspace source of truth:
+
+```bash
+./scripts/validations/api/create-workspace.sh --no-start --check-hbi
+```
+
+Stop the full stack and leftover legacy RBAC containers with
+`make docker-local-full-down`. This preserves volumes;
+pass `--volumes` to `scripts/local_stack/down-full.sh` when a clean HBI data
+volume is required. If the RBAC Kafka consumer is unhealthy, restart the stack
+with `make docker-local-full-up`; the consumer should report that it acquired a
+fencing lock and is listening on `outbox.event.relations-replication-event`.
+
 ## Testing
 
 Tests require a running PostgreSQL instance (SQLite is not supported):

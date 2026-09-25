@@ -27,13 +27,10 @@ from django.db import OperationalError
 from management.atomic_transactions import atomic_block, atomic_with_retry
 from management.group.model import Group
 from management.permission.scope_service import ImplicitResourceService
-from management.inventory_replicator.outbox_replicator import OutboxReplicator
-from management.inventory_replicator.inventory_replicator import DualWriteException, InventoryReplicator
+from management.relation_replicator.outbox_replicator import OutboxReplicator
+from management.relation_replicator.relation_replicator import DualWriteException, RelationReplicator
 from management.role.model import Role, RoleScopeState
-from migration_tool.migrate_binding_scope import (
-    migrate_car_bindings,
-    migrate_system_role_bindings_for_group,
-)
+from migration_tool.migrate_binding_scope import migrate_car_bindings, migrate_system_role_bindings_for_group
 
 from api.cross_access.model import CrossAccountRequest
 
@@ -55,9 +52,7 @@ class _CheckResult:
 
 
 def _check_migration(
-    role: Role,
-    resource_service: ImplicitResourceService,
-    expected_version: Optional[int],
+    role: Role, resource_service: ImplicitResourceService, expected_version: Optional[int]
 ) -> _CheckResult:
     """
     Return whether we can continue to migrate the scope for the provided role.
@@ -121,7 +116,7 @@ class _MigrateContext:
     """
 
     role: Role
-    replicator: InventoryReplicator
+    replicator: RelationReplicator
     resource_service: ImplicitResourceService
     expected_state_version: int
 
@@ -140,14 +135,12 @@ class _MigrateContext:
         to run the migration. Each such transaction must also be SERIALIZABLE.
         """
         if not _check_migration(
-            role=self.role,
-            resource_service=self.resource_service,
-            expected_version=self.expected_state_version,
+            role=self.role, resource_service=self.resource_service, expected_version=self.expected_state_version
         ).can_migrate:
             raise RuntimeError(f"Cannot continue migrating changed role {self.role.name!r}")
 
 
-def migrate_role_scope_if_changed(v1_role: Role, replicator: Optional[InventoryReplicator] = None):
+def migrate_role_scope_if_changed(v1_role: Role, replicator: Optional[RelationReplicator] = None):
     """
     Log scope change and trigger binding migration if scope has changed.
 
@@ -210,9 +203,7 @@ def migrate_role_scope_if_changed(v1_role: Role, replicator: Optional[InventoryR
     # the role was migrated to the relevant scopes.
     with atomic_block():
         final_check = _check_migration(
-            role=v1_role,
-            resource_service=resource_service,
-            expected_version=initial_check.scope_state.version,
+            role=v1_role, resource_service=resource_service, expected_version=initial_check.scope_state.version
         )
 
         if final_check.can_migrate:
@@ -245,10 +236,7 @@ def _migrate_bindings_for_scope_change(context: _MigrateContext):
     cars = list(CrossAccountRequest.objects.filter(roles=role, status="approved"))
 
     if not groups and not cars:
-        logger.info(
-            "No groups or CARs found with role %s, skipping binding migration",
-            role.name,
-        )
+        logger.info("No groups or CARs found with role %s, skipping binding migration", role.name)
         return
 
     migrated_groups = 0
@@ -269,9 +257,7 @@ def _migrate_bindings_for_scope_change(context: _MigrateContext):
 
 
 def migrate_batch_with_fallback[T](
-    migrate_batch_fn: Callable[[_MigrateContext, list[T]], int],
-    context: _MigrateContext,
-    batch: list[T],
+    migrate_batch_fn: Callable[[_MigrateContext, list[T]], int], context: _MigrateContext, batch: list[T]
 ) -> int:
     try:
         # Although migrating each entity is still done individually, it's still worth it to attempt batching because it

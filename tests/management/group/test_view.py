@@ -27,31 +27,26 @@ from django.db import transaction
 from django.test.utils import override_settings
 from django.urls import reverse
 from django.utils import timezone
-from rest_framework import status
-from rest_framework.response import Response
-from rest_framework.test import APIClient
 
-from api.cross_access.model import CrossAccountRequest
-from api.cross_access.util import check_cross_request_expiry
-from api.models import Tenant, User
+from management.atomic_transactions import atomic_with_retry
 from management.cache import TenantCache
 from management.group.definer import add_roles
 from management.group.serializer import GroupInputSerializer
 from management.models import (
     Access,
     BindingMapping,
-    Group,
-    Permission,
-    Principal,
-    Policy,
-    Role,
     ExtRoleRelation,
     ExtTenant,
+    Group,
+    Permission,
+    Policy,
+    Principal,
+    Role,
     Workspace,
 )
-from management.inventory_replicator.noop_replicator import NoopReplicator
-from management.inventory_replicator.inventory_replicator import ReplicationEventType
-from management.role.inventory_api_dual_write_handler import InventoryApiDualWriteHandler
+from management.relation_replicator.noop_replicator import NoopReplicator
+from management.relation_replicator.relation_replicator import ReplicationEventType
+from management.role.relation_api_dual_write_handler import RelationApiDualWriteHandler
 from management.role.v2_model import CustomRoleV2
 from management.tenant_mapping.model import TenantMapping
 from management.tenant_service.v2 import V2TenantBootstrapService
@@ -63,12 +58,19 @@ from migration_tool.in_memory_tuples import (
     resource,
     subject,
 )
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.test import APIClient
 from tests.core.test_kafka import copy_call_args
 from tests.identity_request import IdentityRequest
 from tests.management.role.test_dual_write import RbacFixture
 from tests.management.role.test_view import find_in_list, relation_api_tuple
 from tests.util import assert_v1_v2_tuples_fully_consistent
 from tests.v2_util import seed_v2_role_from_v1
+
+from api.cross_access.model import CrossAccountRequest
+from api.cross_access.util import check_cross_request_expiry
+from api.models import Tenant, User
 
 
 def generate_group_member_relation_entry(group_uuid, principal_user_id):
@@ -878,7 +880,7 @@ class GroupViewsetTests(IdentityRequest):
         response = client.put(url, {}, format="json", **self.headers)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch("core.kafka.RBACProducer.send_kafka_message")
     def test_delete_group_success(self, send_kafka_message, mock_method):
         """Test that we can delete an existing group."""
@@ -1012,7 +1014,7 @@ class GroupViewsetTests(IdentityRequest):
         response = client.delete(url, **self.headers)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     def test_delete_custom_default_group(self, mock_method):
         """
         Test that custom platform_default groups can be deleted and the public default group
@@ -1440,7 +1442,7 @@ class GroupViewsetTests(IdentityRequest):
         role = response.data.get("data")[0]
         self.assertEqual(role.get("system"), False)
 
-    @patch("management.group.inventory_api_dual_write_subject_handler.OutboxReplicator._save_replication_event")
+    @patch("management.group.relation_api_dual_write_subject_handler.OutboxReplicator._save_replication_event")
     def test_add_group_roles_system_policy_create_success(self, mock_method):
         """Test that adding a role to a group without a system policy returns successfully."""
         url = reverse("v1_management:group-roles", kwargs={"uuid": self.group.uuid})
@@ -1469,7 +1471,7 @@ class GroupViewsetTests(IdentityRequest):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     @override_settings(V2_BOOTSTRAP_TENANT=True)
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch("core.kafka.RBACProducer.send_kafka_message")
     def test_system_flag_update_on_add(self, send_kafka_message, mock_method):
         """Test that adding a role to a platform_default group flips the system flag."""
@@ -1693,7 +1695,7 @@ class GroupViewsetTests(IdentityRequest):
             self.assertEqual(create_entry["principal_username"], self.user_data["username"])
 
     @override_settings(V2_BOOTSTRAP_TENANT=True)
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch("core.kafka.RBACProducer.send_kafka_message")
     def test_system_flag_update_on_remove_and_keep_one_role_in_group(self, send_kafka_message, mock_method):
         """Test that removing a role from a platform_default group flips the system flag."""
@@ -1848,7 +1850,7 @@ class GroupViewsetTests(IdentityRequest):
             kafka_mock.assert_has_calls(notification_messages, any_order=True)
 
     @override_settings(V2_BOOTSTRAP_TENANT=True)
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch("core.kafka.RBACProducer.send_kafka_message")
     def test_system_flag_update_on_remove(self, send_kafka_message, mock_method):
         """Test that removing a role from a platform_default group flips the system flag."""
@@ -2138,7 +2140,7 @@ class GroupViewsetTests(IdentityRequest):
         self.assertCountEqual([self.roleB], list(groupC.roles()))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-    @patch("management.group.inventory_api_dual_write_subject_handler.OutboxReplicator.replicate")
+    @patch("management.group.relation_api_dual_write_subject_handler.OutboxReplicator.replicate")
     def test_add_group_role_not_found_will_not_replicate(self, replicate_mock):
         """Test that adding roles to a group skips ids not found, and returns failure."""
         groupC = Group.objects.create(name="groupC", tenant=self.tenant)
@@ -3960,7 +3962,7 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
             "ADD PRINCIPALS cannot be performed on system groups.",
         )
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch(
         "management.principal.proxy.PrincipalProxy.request_filtered_principals",
         return_value={"status_code": 200, "data": []},
@@ -3975,7 +3977,7 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertIsNone(mock_method.call_args)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch(
         "management.principal.proxy.PrincipalProxy.request_filtered_principals",
         return_value={
@@ -4005,7 +4007,9 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
                 ]
             }
 
-            response = client.post(url, test_data, format="json", **self.headers)
+            # captureOnCommitCallbacks ensures deferred notification callbacks fire within TestCase
+            with self.captureOnCommitCallbacks(execute=True):
+                response = client.post(url, test_data, format="json", **self.headers)
             self.assertEqual(response.status_code, status.HTTP_200_OK)
             principal = Principal.objects.get(username=username)
 
@@ -4182,7 +4186,7 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": False,
                     "is_internal": False,
                     "id": 52567473,
@@ -4207,7 +4211,7 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
         )
         self.assertEqual(sa.count(), 1)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch(
         "management.principal.proxy.PrincipalProxy.request_filtered_principals",
         return_value={"status_code": 200, "data": [{"username": "test_user"}]},
@@ -4455,6 +4459,464 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
             response.json().get("errors")[0].get("detail"),
             "REMOVE PRINCIPALS cannot be performed on system groups.",
         )
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_add_principals_returns_503_on_serialization_failure(self, mock_request, mock_repl):
+        """Test that exhausted serialization retries return HTTP 503."""
+        from django.db.utils import OperationalError
+        from psycopg2.errors import SerializationFailure
+
+        serialization_error = OperationalError("could not serialize access")
+        serialization_error.__cause__ = SerializationFailure("could not serialize access due to concurrent update")
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch.object(
+            type(self.group),
+            "objects",
+            wraps=type(self.group).objects,
+        ):
+            with patch(
+                "management.group.view.GroupViewSet._write_group_principals",
+                side_effect=serialization_error,
+            ):
+                response = client.post(url, test_data, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.data["errors"][0]["detail"],
+            "A conflicting update occurred, please retry the request.",
+        )
+        self.assertEqual(response.data["errors"][0]["source"], "groups")
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_add_principals_returns_503_on_deadlock(self, mock_request, mock_repl):
+        """Test that exhausted deadlock retries return HTTP 503."""
+        from django.db.utils import OperationalError
+        from psycopg2.errors import DeadlockDetected
+
+        deadlock_error = OperationalError("deadlock detected")
+        deadlock_error.__cause__ = DeadlockDetected("deadlock detected")
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch(
+            "management.group.view.GroupViewSet._write_group_principals",
+            side_effect=deadlock_error,
+        ):
+            response = client.post(url, test_data, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.data["errors"][0]["detail"],
+            "A conflicting update occurred, please retry the request.",
+        )
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_add_principals_propagates_non_serialization_operational_error(self, mock_request, mock_repl):
+        """Test that non-serialization OperationalError propagates instead of returning 503."""
+        from django.db.utils import OperationalError
+
+        bare_error = OperationalError("connection reset by peer")
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch(
+            "management.group.view.GroupViewSet._write_group_principals",
+            side_effect=bare_error,
+        ):
+            with self.assertRaises(OperationalError):
+                client.post(url, test_data, format="json", **self.headers)
+
+    def test_add_principals_precheck_blocks_protected_group_before_external_calls(self):
+        """Test that protected-group error surfaces before any external validation."""
+        self.group.platform_default = True
+        self.group.admin_default = False
+        self.group.system = False
+        self.group.save()
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch(
+            "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        ) as mock_proxy:
+            response = client.post(url, test_data, format="json", **self.headers)
+
+        # Precheck caught it — BOP proxy never called
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        mock_proxy.assert_not_called()
+
+        # Restore
+        self.group.platform_default = False
+        self.group.save()
+
+    @override_settings(IT_BYPASS_TOKEN_VALIDATION=True, ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.principal.it_service.ITService.request_service_accounts")
+    def test_add_service_account_precheck_blocks_protected_group_before_it_call(self, sa_mock, mock_repl):
+        """Test that protected-group error surfaces before IT service-account validation."""
+        self.group.platform_default = True
+        self.group.admin_default = False
+        self.group.system = False
+        self.group.save()
+
+        sa_uuid = self.sa_client_ids[0]
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"clientId": sa_uuid, "type": "service-account"}]}
+
+        response = client.post(url, test_data, format="json", **self.headers)
+
+        # Precheck caught it — IT service never called
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        sa_mock.assert_not_called()
+
+        # Restore
+        self.group.platform_default = False
+        self.group.save()
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True, NOTIFICATIONS_ENABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    @patch("core.kafka.RBACProducer.send_kafka_message")
+    def test_add_principals_notifications_deferred_via_on_commit(self, send_kafka_message, mock_request, mock_repl):
+        """Test that principal-added notifications are deferred via transaction.on_commit."""
+        test_group = Group.objects.create(name="test_notif_deferred", tenant=self.tenant)
+        url = reverse("v1_management:group-principals", kwargs={"uuid": test_group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch("management.group.view.transaction.on_commit") as mock_on_commit:
+            response = client.post(url, test_data, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # on_commit was called (notifications deferred, not fired inline)
+        self.assertTrue(mock_on_commit.called)
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_write_group_principals_re_fetches_group_under_transaction(self, mock_request, mock_repl):
+        """Test that _write_group_principals re-fetches the group inside the transaction."""
+        test_group = Group.objects.create(name="test_refetch", tenant=self.tenant)
+        url = reverse("v1_management:group-principals", kwargs={"uuid": test_group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch("management.group.view.GroupViewSet.get_object", wraps=None) as mock_get_object:
+            mock_get_object.return_value = test_group
+            response = client.post(url, test_data, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # get_object called inside _write_group_principals (re-fetch under transaction)
+        mock_get_object.assert_called()
+
+    @override_settings(PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED=True)  # SERIALIZABLE only for authoritative backfill
+    @patch("management.group.view.backfill_remote_principals")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_add_principals_integration_retries_exhausted_503_no_side_effects(
+        self, mock_request, mock_repl, mock_backfill
+    ):
+        """Integration: _write_group_principals retries 9 times, returns 503, no persisted side effects.
+
+        Unlike the unit tests above that replace _write_group_principals entirely,
+        this test lets the decorated method run with retry logic active. The
+        serialization error is raised from add_users (called inside
+        _write_group_principals), verifying that:
+        - the @atomic_with_retry(retries=8) decorator retries 9 times (1 + 8),
+        - the outer handler maps exhausted retries to HTTP 503,
+        - no principal relation, outbox entry, or notification is persisted.
+        """
+        import functools as _functools
+
+        from django.db import transaction as _transaction
+        from django.db.utils import OperationalError
+        from psycopg2.errors import SerializationFailure
+
+        from management.atomic_transactions import _is_serialization_or_deadlock
+
+        call_counter = {"attempts": 0}
+
+        def failing_add_users(self_view, group, principals_from_response, org_id=None):
+            call_counter["attempts"] += 1
+            err = OperationalError("could not serialize access")
+            err.__cause__ = SerializationFailure("could not serialize access due to concurrent update")
+            raise err
+
+        class _TestRetryAtomic:
+            """Test-friendly pgtransaction.atomic: context manager + decorator with retry."""
+
+            def __init__(self, isolation_level=None, retry=0):
+                self._retry = retry
+                self._atomic = None
+
+            def __enter__(self):
+                self._atomic = _transaction.atomic()
+                return self._atomic.__enter__()
+
+            def __exit__(self, *exc_info):
+                return self._atomic.__exit__(*exc_info)
+
+            def __call__(self, func):
+                retry = self._retry
+
+                @_functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    last_exc = None
+                    for _ in range(1 + retry):
+                        try:
+                            with _transaction.atomic():
+                                return func(*args, **kwargs)
+                        except OperationalError as exc:
+                            if _is_serialization_or_deadlock(exc):
+                                last_exc = exc
+                                continue
+                            raise
+                    raise last_exc
+
+                return wrapper
+
+        mock_pgtransaction = Mock()
+        mock_pgtransaction.atomic = _TestRetryAtomic
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+        initial_principal_count = self.group.principals.count()
+
+        with patch("management.atomic_transactions.pgtransaction", mock_pgtransaction):
+            with self.settings(ATOMIC_RETRY_DISABLED=False):
+                with patch("management.group.view.backfill_atomic", atomic_with_retry):
+                    with patch("management.group.view.GroupViewSet.add_users", failing_add_users):
+                        response = client.post(url, test_data, format="json", **self.headers)
+
+        # Verify 503 with correct error payload
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.data["errors"][0]["detail"],
+            "A conflicting update occurred, please retry the request.",
+        )
+        self.assertEqual(response.data["errors"][0]["source"], "groups")
+
+        # Verify 9 attempts (1 initial + 8 retries from @atomic_with_retry(retries=8))
+        self.assertEqual(call_counter["attempts"], 9)
+
+        # Verify no principal relation was persisted
+        self.assertEqual(self.group.principals.count(), initial_principal_count)
+
+        # Verify no outbox replication event was saved
+        mock_repl.assert_not_called()
+
+
+@override_settings(REPLICATION_TO_RELATION_ENABLED=False, PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED=True)
+class GroupPrincipalV2SyncTests(IdentityRequest):
+    """Test that adding principals to a group syncs TenantMapping membership via update_user."""
+
+    def setUp(self):
+        """Set up the V2 sync tests."""
+        super().setUp()
+        request = self.request_context["request"]
+        user = User()
+        user.username = self.user_data["username"]
+        user.account = self.customer_data["account_id"]
+        user.org_id = self.customer_data["org_id"]
+        user.admin = True
+        request.user = user
+
+        self.principal = Principal(username=self.user_data["username"], tenant=self.tenant, user_id="1")
+        self.principal.save()
+
+        self.group = Group(name="testGroup", tenant=self.tenant)
+        self.group.save()
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "new_user",
+                    "user_id": "99001",
+                    "is_org_admin": True,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_new_principal_calls_update_user(self, mock_proxy):
+        """Test that adding a new principal creates the principal and adds it to the group."""
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "new_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="new_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "99001")
+        self.assertEqual(principal.tenant, self.tenant)
+        self.assertIn(principal, self.group.principals.all())
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "lazy_user",
+                    "user_id": "99002",
+                    "is_org_admin": False,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_lazy_principal_calls_update_user(self, mock_proxy):
+        """Test that adding a lazy principal (user_id=None) populates user_id and adds to group."""
+        # Create a lazy principal without user_id
+        Principal.objects.create(username="lazy_user", tenant=self.tenant, user_id=None)
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "lazy_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="lazy_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "99002")
+        self.assertIn(principal, self.group.principals.all())
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "existing_user",
+                    "user_id": "88001",
+                    "is_org_admin": True,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_existing_principal_skips_update_user(self, mock_proxy):
+        """Test that adding an existing principal with user_id already set skips update_user."""
+        # Create a principal that already has user_id
+        Principal.objects.create(username="existing_user", tenant=self.tenant, user_id="88001")
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "existing_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="existing_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "88001")
+        self.assertIn(principal, self.group.principals.all())
+
+    @override_settings(V2_BOOTSTRAP_TENANT=True, PRINCIPAL_USER_DOMAIN="redhat")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "tuple_user",
+                    "user_id": "77001",
+                    "is_org_admin": True,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_new_principal_creates_tuples(self, mock_proxy, mock_replicate):
+        """Test that adding a new principal creates TenantMapping group membership tuples."""
+        from management.group.definer import seed_group
+
+        Tenant.objects.get_or_create(tenant_name="public")
+        seed_group()
+
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        mock_replicate.side_effect = replicator.replicate
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        response = client.post(url, {"principals": [{"username": "tuple_user"}]}, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Verify TenantMapping was created and tuples were written
+        mapping = TenantMapping.objects.get(tenant=self.tenant)
+        default_group_tuple_count = tuples.count_tuples(
+            all_of(
+                resource("rbac", "group", str(mapping.default_group_uuid)),
+                relation("member"),
+                subject("rbac", "principal", "redhat/77001"),
+            )
+        )
+        self.assertEqual(default_group_tuple_count, 1, "Expected default group membership tuple")
+
+        admin_group_tuple_count = tuples.count_tuples(
+            all_of(
+                resource("rbac", "group", str(mapping.default_admin_group_uuid)),
+                relation("member"),
+                subject("rbac", "principal", "redhat/77001"),
+            )
+        )
+        self.assertEqual(admin_group_tuple_count, 1, "Expected admin group membership tuple")
 
 
 class GroupViewNonAdminTests(IdentityRequest):
@@ -5371,7 +5833,7 @@ class GroupViewNonAdminTests(IdentityRequest):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json()["name"], new_name_sa)
 
-    @patch("management.group.inventory_api_dual_write_subject_handler.OutboxReplicator._save_replication_event")
+    @patch("management.group.relation_api_dual_write_subject_handler.OutboxReplicator._save_replication_event")
     def test_add_and_remove_role_to_group(self, mock_method):
         Permission.objects.create(permission="app:inventory:read", tenant=self.tenant)
 
@@ -5454,7 +5916,7 @@ class GroupViewNonAdminTests(IdentityRequest):
         assert_group_tuples(to_remove)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
 
-    @patch("management.group.inventory_api_dual_write_subject_handler.OutboxReplicator._save_replication_event")
+    @patch("management.group.relation_api_dual_write_subject_handler.OutboxReplicator._save_replication_event")
     def test_add_and_remove_system_role_to_group(self, mock_method):
         # Create a group with 'User Access administrator' role and add principals we use in headers
         group_with_admin = self._create_group_with_user_access_administrator_role(self.tenant)
@@ -5571,7 +6033,7 @@ class GroupViewNonAdminTests(IdentityRequest):
         response = client.put(url, request_body, format="json", **self.headers_org_admin)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     def test_remove_group_without_User_Access_Admin_fail(self, mock_method):
         """Test that non org admin without 'User Access administrator' role cannot remove a group."""
         test_group = Group(name="test group", tenant=self.tenant)
@@ -5840,7 +6302,7 @@ class GroupViewNonAdminTests(IdentityRequest):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     @override_settings(IT_BYPASS_TOKEN_VALIDATION=True)
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch("management.principal.it_service.ITService.request_service_accounts")
     def test_add_service_account_principal_in_group_without_User_Access_Admin_fail(self, mock_request, mock_method):
         """
@@ -5898,7 +6360,7 @@ class GroupViewNonAdminTests(IdentityRequest):
             actual_call_arg,
         )
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch(
         "management.principal.proxy.PrincipalProxy.request_filtered_principals",
         return_value={"status_code": 200, "data": []},
@@ -5940,7 +6402,7 @@ class GroupViewNonAdminTests(IdentityRequest):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     @override_settings(IT_BYPASS_TOKEN_VALIDATION=True)
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @patch("management.principal.it_service.requests.get")
     def test_add_service_account_principal_in_group_with_User_Access_Admin_success(self, mock_request, mock_method):
         """
@@ -6247,7 +6709,7 @@ class GroupViewNonAdminTests(IdentityRequest):
         response = client.delete(url, format="json", **self.headers_service_account_principal)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     @override_settings(IT_BYPASS_TOKEN_VALIDATION=True)
     def test_remove_service_account_principal_from_group_with_User_Access_Admin_success(self, mock_method):
         """
@@ -7228,7 +7690,7 @@ class GroupReplicationTests(IdentityRequest):
 
         self.fixture.new_principals_in_tenant(["2222222"], self.fixture.new_tenant("car_source").tenant)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_remove_role_does_not_remove_binding_if_cross_account_granted(self, replicate):
         replicate.side_effect = self.in_memory_replicator.replicate
 
@@ -7338,7 +7800,7 @@ class GroupReplicationTests(IdentityRequest):
 
         self.assertCountEqual(subjects, ["redhat/2222222"])
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_expire_cross_account_does_not_remove_binding_if_role_granted_to_group(self, replicate):
         replicate.side_effect = self.in_memory_replicator.replicate
 
@@ -7446,7 +7908,7 @@ class GroupReplicationTests(IdentityRequest):
         }
         self.assertCountEqual(subjects, [str(test_group.uuid)])
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_add_role_already_added_is_noop(self, replicate):
         replicate.side_effect = self.in_memory_replicator.replicate
 
@@ -7473,7 +7935,7 @@ class GroupReplicationTests(IdentityRequest):
         # Expect no new tuples
         self.assertEqual(0, self.relations.count_tuples())
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_remove_role_added_twice_removes_role(self, replicate):
         replicate.side_effect = self.in_memory_replicator.replicate
 
@@ -7526,7 +7988,7 @@ class GroupReplicationTests(IdentityRequest):
 
         self.assertEqual(len(sr1_bindings), 0)
 
-    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_migrate_role_on_assign(self, replicate):
         tuples = InMemoryTuples()
         replicate.side_effect = InMemoryRelationReplicator(tuples).replicate
@@ -7539,9 +8001,7 @@ class GroupReplicationTests(IdentityRequest):
             tenant=self.tenant,
         )
 
-        dual_write_handler = InventoryApiDualWriteHandler(
-            role=role, event_type=ReplicationEventType.CREATE_CUSTOM_ROLE
-        )
+        dual_write_handler = RelationApiDualWriteHandler(role=role, event_type=ReplicationEventType.CREATE_CUSTOM_ROLE)
         dual_write_handler.replicate_new_or_updated_role(role)
 
         # Emulate the role having been created before V2 models were added.

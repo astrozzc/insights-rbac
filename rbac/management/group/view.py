@@ -18,6 +18,7 @@
 """View for group management."""
 
 import logging
+from functools import partial
 from typing import Iterable, List, Optional, Tuple
 from uuid import UUID
 
@@ -26,6 +27,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.db.models.aggregates import Count
+from django.db.utils import OperationalError
 from django.http import Http404
 from django.utils.translation import gettext as _
 from django_filters import rest_framework as filters
@@ -38,8 +40,8 @@ from management.group.definer import (
     remove_roles,
     set_system_flag_before_update,
 )
-from management.group.inventory_api_dual_write_group_handler import (
-    InventoryApiDualWriteGroupHandler,
+from management.group.relation_api_dual_write_group_handler import (
+    RelationApiDualWriteGroupHandler,
 )
 from management.group.serializer import (
     GroupInputSerializer,
@@ -49,7 +51,6 @@ from management.group.serializer import (
     GroupSerializer,
     RoleMinimumSerializer,
 )
-from management.inventory_replicator.inventory_replicator import ReplicationEventType
 from management.models import AuditLog, Group, Role
 from management.notifications.notification_handlers import (
     group_obj_change_notification_handler,
@@ -57,22 +58,27 @@ from management.notifications.notification_handlers import (
 )
 from management.permissions import GroupAccessPermission
 from management.permissions.v2_edit_api_access import is_v2_edit_enabled_for_request
+from management.principal.backfill import backfill_atomic, backfill_remote_principals
 from management.principal.it_service import ITService
 from management.principal.model import Principal
-from management.principal.proxy import PrincipalProxy
+from management.principal.proxy import PrincipalProxy, external_principal_to_user
 from management.principal.serializer import ServiceAccountSerializer
 from management.principal.view import ADMIN_ONLY_KEY, USERNAME_ONLY_KEY, VALID_BOOLEAN_VALUE
 from management.querysets import (
     get_group_queryset,
     get_role_queryset,
 )
+from management.relation_replicator.outbox_replicator import OutboxReplicator
+from management.relation_replicator.relation_replicator import ReplicationEventType
 from management.role.view import RoleViewSet
 from management.role_binding.service import RoleBindingService
 from management.tenant_mapping.v2_activation import V1WriteBlockedError, assert_v1_write_allowed
+from management.tenant_service import get_tenant_bootstrap_service
 from management.utils import validate_and_get_key, validate_group_name, validate_uuid
 from rest_framework import mixins, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter
+from rest_framework.generics import get_object_or_404
 from rest_framework.request import Request
 from rest_framework.response import Response
 
@@ -80,6 +86,7 @@ from api.common.pagination import StandardResultsSetPagination
 from api.models import Tenant, User
 from .insufficient_privileges import InsufficientPrivilegesError
 from .service_account_not_found_error import ServiceAccountNotFoundError
+from ..atomic_transactions import _is_serialization_or_deadlock
 from ..principal.unexpected_status_code_from_it import UnexpectedStatusCodeFromITError
 
 USERNAMES_KEY = "usernames"
@@ -461,7 +468,7 @@ class GroupViewSet(
             is_custom_default_group = group.platform_default
             group_tenant = group.tenant
 
-            dual_write_handler = InventoryApiDualWriteGroupHandler(group, ReplicationEventType.DELETE_GROUP)
+            dual_write_handler = RelationApiDualWriteGroupHandler(group, ReplicationEventType.DELETE_GROUP)
             roles = Role.objects.filter(policies__group=group)
             if not group.platform_default and not group.principals.exists() and not roles.exists():
                 expected_empty_relation_reason = (
@@ -584,21 +591,14 @@ class GroupViewSet(
         tenant = self.request.tenant
         new_principals = []
         for item in principals_from_response:
-            # cross-account request principals won't be in the resp from BOP since they don't exist
             username = item["username"]
-            try:
-                principal = Principal.objects.get(username__iexact=username, tenant=tenant)
-                if principal.user_id is None and "user_id" in item:
-                    # Some lazily created Principals may not have user_id.
-                    user_id = item["user_id"]
-                    principal.user_id = user_id
-                    principal.save()
-            except Principal.DoesNotExist:
-                principal = Principal.objects.create(username=username, tenant=tenant, user_id=item["user_id"])
-                logger.info("Created new principal %s for org_id %s.", username, org_id)
+            principal = Principal.objects.get(username__iexact=username, tenant=tenant)
             group.principals.add(principal)
             new_principals.append(principal)
-            group_principal_change_notification_handler(self.request.user, group, username, "added")
+            transaction.on_commit(
+                partial(group_principal_change_notification_handler, self.request.user, group, username, "added"),
+                robust=True,
+            )
         return group, new_principals
 
     def ensure_id_for_service_accounts_exists(
@@ -675,11 +675,15 @@ class GroupViewSet(
 
             group.principals.add(principal)
             new_service_accounts.append(principal)
-            group_principal_change_notification_handler(
-                self.request.user,
-                group,
-                SERVICE_ACCOUNT_USERNAME_FORMAT.format(clientId=client_id),
-                "added",
+            transaction.on_commit(
+                partial(
+                    group_principal_change_notification_handler,
+                    self.request.user,
+                    group,
+                    SERVICE_ACCOUNT_USERNAME_FORMAT.format(clientId=client_id),
+                    "added",
+                ),
+                robust=True,
             )
 
         return group, new_service_accounts
@@ -809,6 +813,17 @@ class GroupViewSet(
 
         return response
 
+    def _get_group_for_permission_precheck(self, uuid: Optional[UUID]):
+        """Fetch the group without locking it, solely to run permission checks up front.
+
+        Mirrors the unlocked branch of `get_queryset`. Used so permission errors surface before any
+        external validation calls, without holding a row lock for the duration of those calls.
+        """
+        queryset = self.filter_queryset(get_group_queryset(self.request, self.args, self.kwargs))
+        group = get_object_or_404(queryset, uuid=uuid)
+        self.check_object_permissions(self.request, group)
+        return group
+
     def _add_principal_into_group(self, request: Request, uuid: Optional[UUID] = None):
         """Add principals into a group."""
         """
@@ -867,94 +882,149 @@ class GroupViewSet(
             else:
                 principals.append(specified_principal)
 
-        with transaction.atomic():
-            group = self.get_object()
-            self.protect_special_groups("add principals", group, additional="platform_default")
+        # Check permissions before doing any external validation, so a caller without access (or targeting a
+        # protected group) gets that error instead of an IT/BOP validation error. This uses an unlocked read;
+        # the group is re-fetched (locked) and re-checked inside the retryable write below.
+        precheck_group = self._get_group_for_permission_precheck(uuid)
+        self.protect_special_groups("add principals", precheck_group, additional="platform_default")
+        if not request.user.admin:
+            self.protect_group_with_user_access_admin_role(precheck_group.roles_with_access(), "add principals")
 
-            if not request.user.admin:
-                self.protect_group_with_user_access_admin_role(group.roles_with_access(), "add principals")
-
-            # Process the service accounts and add them to the group.
-            if len(service_accounts) > 0:
-                token_validator = ITSSOTokenValidator()
-                request.user.bearer_token = token_validator.validate_token(
-                    request=request,
-                    additional_scopes_to_validate=set[ScopeClaims]([ScopeClaims.SERVICE_ACCOUNTS_CLAIM]),
+        # Process the service accounts: validate them against IT *before* opening any DB transaction, since
+        # these are slow external calls and we don't want to hold a SERIALIZABLE transaction open across them.
+        if len(service_accounts) > 0:
+            token_validator = ITSSOTokenValidator()
+            request.user.bearer_token = token_validator.validate_token(
+                request=request,
+                additional_scopes_to_validate=set[ScopeClaims]([ScopeClaims.SERVICE_ACCOUNTS_CLAIM]),
+            )
+            try:
+                self.ensure_id_for_service_accounts_exists(user=request.user, service_accounts=service_accounts)
+            except InsufficientPrivilegesError as ipe:
+                return Response(
+                    status=status.HTTP_403_FORBIDDEN,
+                    data={
+                        "errors": [
+                            {
+                                "detail": str(ipe),
+                                "status": str(status.HTTP_403_FORBIDDEN),
+                                "source": "groups",
+                            }
+                        ]
+                    },
                 )
-                try:
-                    self.ensure_id_for_service_accounts_exists(user=request.user, service_accounts=service_accounts)
-                except InsufficientPrivilegesError as ipe:
-                    return Response(
-                        status=status.HTTP_403_FORBIDDEN,
-                        data={
-                            "errors": [
-                                {
-                                    "detail": str(ipe),
-                                    "status": str(status.HTTP_403_FORBIDDEN),
-                                    "source": "groups",
-                                }
-                            ]
-                        },
-                    )
-                except ServiceAccountNotFoundError as err:
-                    return Response(
-                        status=status.HTTP_404_NOT_FOUND,
-                        data={
-                            "errors": [
-                                {
-                                    "detail": str(err),
-                                    "source": "groups",
-                                    "status": str(status.HTTP_404_NOT_FOUND),
-                                }
-                            ]
-                        },
-                    )
-
-            # Process user principals and add them to the group.
-            principals_from_response = []
-            if len(principals) > 0:
-                proxy_response = self.validate_principals_in_proxy_request(principals, org_id=org_id)
-                if len(proxy_response.get("data", [])) > 0:
-                    principals_from_response = proxy_response.get("data", [])
-                if isinstance(proxy_response, dict) and "errors" in proxy_response:
-                    return Response(status=proxy_response["status_code"], data=proxy_response["errors"])
-
-            new_service_accounts = []
-            if len(service_accounts) > 0:
-                group, new_service_accounts = self.add_service_accounts(
-                    group=group,
-                    service_accounts=service_accounts,
-                    org_id=org_id,
+            except ServiceAccountNotFoundError as err:
+                return Response(
+                    status=status.HTTP_404_NOT_FOUND,
+                    data={
+                        "errors": [
+                            {
+                                "detail": str(err),
+                                "source": "groups",
+                                "status": str(status.HTTP_404_NOT_FOUND),
+                            }
+                        ]
+                    },
                 )
-                for sa in new_service_accounts:
-                    auditlog = AuditLog()
-                    auditlog.log_group_assignment(
-                        request,
-                        AuditLog.GROUP,
-                        group,
-                        sa,
-                        Principal.Types.SERVICE_ACCOUNT,
-                    )
-            new_users = []
-            if len(principals) > 0:
-                group, new_users = self.add_users(group, principals_from_response, org_id=org_id)
-                for user in new_users:
-                    auditlog = AuditLog()
-                    auditlog.log_group_assignment(
-                        request,
-                        AuditLog.GROUP,
-                        group,
-                        user,
-                        Principal.Types.USER,
-                    )
 
-            dual_write_handler = InventoryApiDualWriteGroupHandler(group, ReplicationEventType.ADD_PRINCIPALS_TO_GROUP)
-            dual_write_handler.replicate_new_principals(new_users + new_service_accounts)
+        # Likewise, validate user principals against BOP before opening any DB transaction.
+        principals_from_response = []
+        if len(principals) > 0:
+            proxy_response = self.validate_principals_in_proxy_request(principals, org_id=org_id)
+            if len(proxy_response.get("data", [])) > 0:
+                principals_from_response = proxy_response.get("data", [])
+            if isinstance(proxy_response, dict) and "errors" in proxy_response:
+                return Response(status=proxy_response["status_code"], data=proxy_response["errors"])
+
+        # All external validation is done. Now persist the changes in a short, retryable DB transaction.
+        try:
+            return self._write_group_principals(
+                request=request,
+                org_id=org_id,
+                service_accounts=service_accounts,
+                principals=principals,
+                principals_from_response=principals_from_response,
+            )
+        except OperationalError as e:
+            if _is_serialization_or_deadlock(e):
+                return Response(
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    data={
+                        "errors": [
+                            {
+                                "detail": "A conflicting update occurred, please retry the request.",
+                                "status": str(status.HTTP_503_SERVICE_UNAVAILABLE),
+                                "source": "groups",
+                            }
+                        ]
+                    },
+                )
+            raise
+
+    @backfill_atomic(retries=8)
+    def _write_group_principals(
+        self,
+        request: Request,
+        org_id: str,
+        service_accounts: List[dict],
+        principals: List[dict],
+        principals_from_response: List[dict],
+    ):
+        """Persist previously-validated principals/service accounts onto the group.
+
+        DB-only (no external calls), so it is safe to retry on serialization failures.
+        """
+        group = self.get_object()
+        self.protect_special_groups("add principals", group, additional="platform_default")
+
+        if not request.user.admin:
+            self.protect_group_with_user_access_admin_role(group.roles_with_access(), "add principals")
+
+        new_service_accounts = []
+        if len(service_accounts) > 0:
+            group, new_service_accounts = self.add_service_accounts(
+                group=group,
+                service_accounts=service_accounts,
+                org_id=org_id,
+            )
+            for sa in new_service_accounts:
+                auditlog = AuditLog()
+                auditlog.log_group_assignment(
+                    request,
+                    AuditLog.GROUP,
+                    group,
+                    sa,
+                    Principal.Types.SERVICE_ACCOUNT,
+                )
+        if principals_from_response:
+            tenant = self.request.tenant
+            bootstrap_service = get_tenant_bootstrap_service(OutboxReplicator())
+            users = [external_principal_to_user(bop_item) for bop_item in principals_from_response]
+
+            if not all(u.is_active for u in users):
+                raise AssertionError(f"Received inactive users despite not requesting them: {users}")
+
+            backfill_remote_principals(bootstrap_service, users, tenant)
+
+        new_users = []
+        if len(principals) > 0:
+            group, new_users = self.add_users(group, principals_from_response, org_id=org_id)
+            for user in new_users:
+                auditlog = AuditLog()
+                auditlog.log_group_assignment(
+                    request,
+                    AuditLog.GROUP,
+                    group,
+                    user,
+                    Principal.Types.USER,
+                )
+
+        dual_write_handler = RelationApiDualWriteGroupHandler(group, ReplicationEventType.ADD_PRINCIPALS_TO_GROUP)
+        dual_write_handler.replicate_new_principals(new_users + new_service_accounts)
+
         # Serialize the group...
         output = GroupSerializer(group)
-        response = Response(status=status.HTTP_200_OK, data=output.data)
-
-        return response
+        return Response(status=status.HTTP_200_OK, data=output.data)
 
     def _remove_principal_from_group(self, request: Request, uuid: Optional[UUID] = None):
         """Remove principals from a group."""
@@ -1040,7 +1110,7 @@ class GroupViewSet(
                     )
                 response = Response(status=status.HTTP_204_NO_CONTENT)
 
-            dual_write_handler = InventoryApiDualWriteGroupHandler(
+            dual_write_handler = RelationApiDualWriteGroupHandler(
                 group,
                 ReplicationEventType.REMOVE_PRINCIPALS_FROM_GROUP,
             )

@@ -40,11 +40,34 @@ scalar UUID extends string;
 @example(#{
     application: "rbac",
     resource_type: "workspace",
-    operation: "read"
+    operation: "read",
+    permission: "rbac:workspace:read",
+    description: "Read access to workspaces",
+    requires: #[]
 })
 model Permission {
+    application?: string;
+    resource_type?: string;
+    @doc("The action allowed by this permission (e.g. 'read', 'create', 'delete', 'update'). Equivalent to `verb` in the v1 API.")
+    operation?: string;
+    @doc("The full permission string, e.g. 'rbac:workspace:read'.")
+    permission?: string;
+    @doc("A description of what this permission grants access to.")
+    description?: string;
+    @doc("List of other permission strings that are required alongside this one.")
+    requires?: string[];
+}
+
+@example(#{
+    application: "rbac",
+    resource_type: "workspace",
+    operation: "read"
+})
+@doc("Permission data for role create and update operations. Unlike `Permission`, all fields are required.")
+model PermissionWrite {
     application: string;
     resource_type: string;
+    @doc("The action allowed by this permission (e.g. 'read', 'create', 'delete', 'update'). Equivalent to `verb` in the v1 API.")
     operation: string;
 }
 
@@ -104,7 +127,11 @@ scalar FieldMask extends string;
 
 /**
  * Limit for pagination. Controls the maximum number of items returned.
- * Use -1 to return all objects.
+ * Default: 10. Use -1 to return all objects in a single response.
+ *
+ * Maximum values (enforced server-side, not in schema):
+ * - Workspaces: 3000
+ * - All other list endpoints: 1000
  */
 scalar Limit extends int64;
 
@@ -216,7 +243,7 @@ namespace Problems {
         InvalidRequest:"http://project-kessel.org/problems/invalid-request",
         AlreadyExists:"http://project-kessel.org/problems/already-exists",
         WorkspaceNotEmpty:"http://project-kessel.org/problems/workspace-not-empty",
-        ServiceUnavailable:"http://project-kessel.org/problems/service-unavailable",
+        Conflict:"http://project-kessel.org/problems/conflict",
     }
 
     @error
@@ -261,17 +288,6 @@ namespace Problems {
     }
 
     @error
-    model Problem503 extends ProblemDetails<Status = 503>{
-        type: ProblemType.ServiceUnavailable,
-        title: "A downstream dependency is temporarily unavailable. Please retry shortly.",
-        @example("Inventory authorization is temporarily unavailable. Please try again shortly.")
-        detail: string,
-        @header("Retry-After")
-        @example("1")
-        retryAfter: string
-    }
-
-    @error
     model Problem400 extends ProblemDetails<Status = 400>{
         type: ProblemType.InvalidRequest,
         title: "The request payload contains invalid syntax.",
@@ -283,6 +299,14 @@ namespace Problems {
     model Problem400AlreadyExists extends ProblemDetails<Status = 400>{
         type: ProblemType.AlreadyExists,
         title: "The resource already exists.";
+    }
+
+    @error
+    model Problem409 extends ProblemDetails<Status = 409>{
+        type: ProblemType.Conflict,
+        title: "The request conflicts with the current state of the resource.",
+        @example("Cannot delete group with active role bindings.")
+        detail: string
     }
 
     alias CommonProblems = Problem400 | Problem401 | Problem403 | Problem500;
@@ -513,7 +537,7 @@ namespace Workspaces {
         data: Workspace[];
     }
 
-    @doc("List workspaces in a tenant")
+    @doc("List workspaces in a tenant. Uses offset pagination (`limit`, `offset`). Max limit 3000.")
     @summary("List workspaces in a tenant")
 
     @opExample(
@@ -570,7 +594,7 @@ namespace Workspaces {
         @doc("When true, list responses include ancestor workspaces for tree navigation and fallback workspaces (root, default, ungrouped) when the user has no explicit access. When false (default), only workspaces with explicit Inventory permission are returned.")
         @example(false)
         @query with_ancestry?: boolean = false;
-    ): WorkspaceListResponse | Problems.CommonProblems | Problems.Problem503;
+    ): WorkspaceListResponse | Problems.CommonProblems;
 
     @doc("Create workspace in tenant")
     @summary("Create workspace in tenant")
@@ -774,7 +798,7 @@ namespace Workspaces {
         with_ancestry?: boolean = false;
     }
 
-    @doc("Query workspaces by a list of IDs")
+    @doc("Query workspaces by a list of IDs. Uses offset pagination (`limit`, `offset` in query string). Max limit 3000.")
     @summary("Query workspaces by a list of IDs")
     @route("query/")
     @opExample(#{
@@ -824,7 +848,7 @@ namespace Workspaces {
         @query order_by?: string = "name";
 
         @body body: WorkspaceQueryRequest;
-    ): WorkspaceListResponse | Problems.CommonProblems | Problems.Problem503;
+    ): WorkspaceListResponse | Problems.CommonProblems;
 }
 
 @route("/role-bindings/")
@@ -1025,7 +1049,7 @@ namespace RoleBindings {
         sources?: Resource[];
     }
 
-    @doc("List role bindings grouped by subject. subject_type (optional) is user or group only, with subject_id as UUID. granted_subject_type, granted_subject_id, and granted_subject.principal.user_id are not query parameters on this path—use GET /role-bindings/ for those filters.")
+    @doc("List role bindings grouped by subject. Uses cursor pagination (`limit`, `cursor`). Max limit 1000. subject_type (optional) is user or group only, with subject_id as UUID. granted_subject_type, granted_subject_id, and granted_subject.principal.user_id are not query parameters on this path—use GET /role-bindings/ for those filters.")
     @summary("List role bindings grouped by subject")
     @route("by-subject/")
     @opExample(#{
@@ -1327,7 +1351,7 @@ namespace RoleBindings {
         sources?: Resource[];
     }
 
-    @doc("List role bindings")
+    @doc("List role bindings. Uses cursor pagination (`limit`, `cursor`). Max limit 1000.")
     @summary("List role bindings")
     @opExample(#{
         parameters: #{
@@ -1442,7 +1466,7 @@ namespace Roles {
         @doc("A description of the role to help clarify its purpose. Does not need to be unique.")
         description?: string;
         @doc("List of permissions to assign to this role")
-        permissions: Permission[];
+        permissions: PermissionWrite[];
     }
 
     model RoleResponse<StatusCode extends int32> {
@@ -1450,7 +1474,7 @@ namespace Roles {
         ...KesselRBAC.Role;
     }
 
-    @doc("List the roles for a tenant")
+    @doc("List the roles for a tenant. Uses cursor pagination (`limit`, `cursor`). Max limit 1000.")
     @summary("List the roles for a tenant")
     @opExample(#{
         parameters: #{
@@ -1683,6 +1707,31 @@ enum PrincipalType {
     `service-account`,
 }
 
+@doc("Principal type filter for listing principals. Extends PrincipalType with 'all' to return both users and service accounts.")
+enum PrincipalTypeFilter {
+    user,
+    @doc("Service account principal")
+    `service-account`,
+    @doc("Return both users and service accounts")
+    all,
+}
+
+@doc("Group scope filter for controlling group visibility")
+enum GroupScope {
+    @doc("Return all groups in the organization (default)")
+    org_id,
+    @doc("Return only groups the calling principal belongs to")
+    principal,
+}
+
+@doc("Role name matching discriminator for the role_names filter")
+enum RoleDiscriminator {
+    @doc("Match groups that have ANY of the specified roles (default)")
+    any,
+    @doc("Match groups that have ALL of the specified roles")
+    all,
+}
+
 @example(#{
     uuid: "550e8400-e29b-41d4-a716-446655440002",
     username: "jdoe",
@@ -1690,6 +1739,18 @@ enum PrincipalType {
     user_id: "12345",
     service_account_id: null,
     group_count: 3
+})
+@example(#{
+    uuid: "660e8400-e29b-41d4-a716-446655440003",
+    username: "service-account-abc123",
+    type: PrincipalType.`service-account`,
+    user_id: null,
+    service_account_id: "abc123",
+    group_count: 1,
+    display_name: "My Service Account",
+    description: "Automation service account",
+    owner: "jdoe",
+    time_created: 1700000000
 })
 model Principal {
     @doc("UUID that uniquely identifies the principal")
@@ -1703,8 +1764,15 @@ model Principal {
     @doc("Service account client ID. Null for users.")
     service_account_id: string | null;
     @doc("Number of groups the principal belongs to")
-    @minValue(0)
     group_count: int32;
+    @doc("Display name of the service account. Only present for service-account principals.")
+    display_name?: string;
+    @doc("Description of the service account. Only present for service-account principals.")
+    description?: string | null;
+    @doc("Owner username of the service account. Only present for service-account principals.")
+    owner?: string;
+    @doc("Unix timestamp when the service account was created. Only present for service-account principals.")
+    time_created?: int64;
 }
 
 model PrincipalListResponse {
@@ -1719,7 +1787,7 @@ model PrincipalListResponse {
 @doc("Operations about principals")
 namespace Principals {
 
-    @doc("List the principals for a tenant")
+    @doc("List the principals for a tenant. Uses offset pagination (`limit`, `offset`). Max limit 1000.")
     @summary("List the principals for a tenant")
     @opExample(#{
         parameters: #{
@@ -1794,4 +1862,347 @@ namespace Principals {
     @get op read(
         @path uuid: UUID;
     ): ItemResponse<Principal, 200> | Problems.CommonProblems | Problems.Problem404;
+}
+
+@route("/permissions/")
+@tag("Permissions")
+@doc("Operations about permissions")
+namespace Permissions {
+
+    model Pagination {
+        @doc("Pagination metadata")
+        meta: OffsetPaginationMeta;
+
+        @doc("Pagination links")
+        links: OffsetPaginationLinks;
+    }
+
+    @example(#{
+        meta: #{
+            count: 100,
+            limit: 10,
+            offset: 0
+        },
+        links: #{
+            first: "/api/rbac/v2/permissions/?limit=10&offset=0",
+            next: "/api/rbac/v2/permissions/?limit=10&offset=10",
+            previous: null,
+            last: "/api/rbac/v2/permissions/?limit=10&offset=90"
+        },
+        data: #[
+            #{
+                application: "rbac",
+                resource_type: "workspace",
+                operation: "read",
+                permission: "rbac:workspace:read",
+                description: "Read access to workspaces",
+                requires: #[]
+            }
+        ]
+    })
+    model PermissionListResponse {
+        ...Pagination;
+
+        @doc("List of permissions")
+        data: Permission[];
+    }
+
+    @doc("List the permissions for a tenant")
+    @summary("List the permissions for a tenant")
+    @opExample(#{
+        parameters: #{
+            limit: 10,
+            offset: 0
+        },
+        returnType: #{
+            meta: #{
+                count: 100,
+                limit: 10,
+                offset: 0
+            },
+            links: #{
+                first: "/api/rbac/v2/permissions/?limit=10&offset=0",
+                next: "/api/rbac/v2/permissions/?limit=10&offset=10",
+                previous: null,
+                last: "/api/rbac/v2/permissions/?limit=10&offset=90"
+            },
+            data: #[
+                #{
+                    application: "rbac",
+                    resource_type: "workspace",
+                    operation: "read",
+                    permission: "rbac:workspace:read",
+                    description: "Read access to workspaces",
+                    requires: #[]
+                }
+            ]
+        }
+    })
+    @get op list(
+        @query limit?: Limit = DefaultLimit;
+
+        @doc("Offset for offset-based pagination.")
+        @query offset?: Offset = DefaultOffset;
+
+        @doc("Filter by application name. Exact match by default. You may also use a comma-separated list to match on multiple applications.")
+        @query application?: string;
+
+        @doc("Filter permissions by the resource type (e.g. 'tenant', 'workspace'). When omitted, returns permissions from all types. You may also use a comma-separated list to match on multiple resource_types.")
+        @query resource_type?: string;
+
+        @doc("Filter by operation (e.g. 'read', 'create', 'delete', 'update'). You may also use a comma-separated list to match on multiple operation types. Equivalent to `verb` in the v1 API.")
+        @query operation?: string;
+
+        @doc("Filter by full permission string. Partial/contains match (e.g. 'workspace' matches 'rbac:workspace:read'), Only a single value is supported.")
+        @query permission?: string;
+
+        @doc("When true, exclude wildcard/global permissions (where application, resource_type, or operation is '*') from the results.")
+        @query exclude_globals?: boolean = false;
+
+        @doc("Exclude permissions already assigned to the given role(s). Comma-separated list of role UUIDs.")
+        @query exclude_roles?: string;
+
+        @doc("When true, only return permissions belonging to applications allowed for role creation.")
+        @query allowed_only?: boolean = false;
+
+        @doc("Control which fields are included in the response.")
+        @query fields?: FieldMask = "application,resource_type,operation,permission,description,requires";
+
+        @doc("Sort by specified field(s), prefix with '-' for descending order. Allowed fields: application, resource_type, operation, permission.")
+        @query order_by?: OrderBy = "permission";
+    ): PermissionListResponse | Problems.CommonProblems;
+
+    model PermissionOptionsResponse {
+        ...Pagination;
+
+        @doc("List of distinct values for the requested field")
+        data: string[];
+    }
+
+    @doc("List distinct values for a single permission field, used to populate filter options (e.g. Application, Resource type, Operation) in the UI.")
+    @route("/options/")
+    @get op options(
+        @query limit?: Limit = DefaultLimit;
+
+        @doc("Offset for offset-based pagination.")
+        @query offset?: Offset = DefaultOffset;
+
+        @doc("The field to return distinct values for. One of: application, resource_type, operation, permission.")
+        @query field: "application" | "resource_type" | "operation" | "permission";
+
+        @doc("Filter by application name. You may use a comma-separated list to filter on multiple applications.")
+        @query application?: string;
+
+        @doc("Filter by resource type. You may use a comma-separated list to filter on multiple resource types.")
+        @query resource_type?: string;
+
+        @doc("Filter by operation. You may use a comma-separated list to filter on multiple operations.")
+        @query operation?: string;
+
+        @doc("When true, exclude wildcard/global permission options.")
+        @query exclude_globals?: boolean = false;
+
+        @doc("Exclude permissions already assigned to the given role(s). Comma-separated list of role UUIDs.")
+        @query exclude_roles?: string;
+
+        @doc("When true, only return options for applications allowed for role creation.")
+        @query allowed_only?: boolean = false;
+    ): PermissionOptionsResponse | Problems.CommonProblems;
+}
+
+@route("/groups/")
+@tag("Groups")
+@doc("Group lifecycle and membership management. Role assignment is handled via role bindings API.")
+namespace Groups {
+    model GroupInput {
+        @doc("Name of the group")
+        @minLength(1)
+        @maxLength(150)
+        name: string;
+        @doc("Description of the group")
+        @maxLength(1000)
+        description?: string;
+    }
+
+    model Group {
+        @doc("UUID that uniquely identifies the group")
+        uuid: UUID;
+        @doc("Name of the group")
+        @minLength(1)
+        @maxLength(150)
+        name: string;
+        @doc("Description of the group")
+        @maxLength(1000)
+        description?: string;
+        @doc("Number of user principals in the group (does not count service accounts, matching V1 principalCount semantics)")
+        @minValue(0)
+        principal_count: int64;
+        @doc("Number of roles assigned to this group via role bindings")
+        @minValue(0)
+        role_count: int32;
+        @doc("2019-01-21T17:32:28Z")
+        created: offsetDateTime;
+        @doc("2019-01-21T17:32:28Z")
+        modified: offsetDateTime;
+        @doc("Whether this is a system-managed group")
+        system: boolean;
+        @doc("Whether this is the platform default group")
+        platform_default: boolean;
+        @doc("Whether this is the admin default group")
+        admin_default: boolean;
+    }
+
+    model GroupListResponse {
+        @statusCode _: 200;
+        meta: OffsetPaginationMeta;
+        links: OffsetPaginationLinks;
+        data: Group[];
+    }
+
+    @doc("List groups. Supports filtering by name, role membership, principal membership, and group flags. Use scope=principal to return only groups the calling user belongs to.")
+    @summary("List groups")
+    @get op list(
+        @doc("Filter by name (substring or glob with *)")
+        @query name?: string;
+        @doc("Filter by group UUIDs")
+        @query(#{explode: false}) uuid?: UUID[];
+        @doc("Filter groups that contain this username as a member")
+        @query username?: string;
+        @doc("Exclude groups that contain this username. Mutually exclusive with username.")
+        @query exclude_username?: string;
+        @doc("Filter groups by comma-separated role names. Use role_discriminator to control match logic.")
+        @query role_names?: string;
+        @doc("Controls how role_names are matched: 'any' returns groups with at least one matching role; 'all' requires every role. Only used with role_names.")
+        @query role_discriminator?: RoleDiscriminator = RoleDiscriminator.any;
+        @doc("Filter groups by comma-separated principal usernames. Returns groups that contain ALL specified principals.")
+        @query principals?: string;
+        @doc("Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to.")
+        @query scope?: GroupScope = GroupScope.org_id;
+        @doc("Filter by system group flag")
+        @query system?: boolean;
+        @doc("Filter by platform default group flag")
+        @query platform_default?: boolean;
+        @doc("Filter by admin default group flag")
+        @query admin_default?: boolean;
+        @doc("Order by field (prefix - for descending). Allowed: name, modified, principal_count, role_count")
+        @query order_by?: string = "name";
+        @query limit?: Limit = DefaultLimit;
+        @query offset?: Offset = DefaultOffset;
+    ): GroupListResponse | Problems.CommonProblems;
+
+    @doc("Create a group")
+    @summary("Create a group")
+    @post op create(
+        @body body: GroupInput;
+    ): ItemResponse<Group, 201> | Problems.CommonProblems | Problems.Problem400AlreadyExists;
+
+    @route("{uuid}/")
+    @doc("Retrieve a group by UUID. Unlike V1, V2 does not embed principals or roles in the group response. Use GET /groups/{uuid}/principals/ for membership and GET /role-bindings/by-subject/?subject_type=group&subject_id={uuid} for role assignments. This is an intentional contract change to reduce payload size and support pagination on related resources.")
+    @summary("Retrieve a group")
+    @get op retrieve(
+        @path uuid: UUID;
+    ): ItemResponse<Group, 200> | Problems.CommonProblems | Problems.Problem404;
+
+    @route("{uuid}/")
+    @doc("Update a group. Protected-group behavior: system groups (system=true) return 400; platform_default and admin_default groups allow name/description updates but not membership changes through this endpoint.")
+    @summary("Update a group")
+    @put op update(
+        @path uuid: UUID;
+        @body body: GroupInput;
+    ): ItemResponse<Group, 200> | Problems.CommonProblems | Problems.Problem404;
+
+    @route("{uuid}/")
+    @doc("Delete a group. Protected-group behavior: system groups (system=true) return 400; platform_default groups return 400; admin_default groups return 400. Groups with active role bindings return 409 Conflict. Only custom (non-protected) groups with no active role bindings can be deleted.")
+    @summary("Delete a group")
+    @delete op destroy(
+        @path uuid: UUID;
+    ): NoContentResponse | Problems.CommonProblems | Problems.Problem404 | Problems.Problem409;
+
+    model PrincipalListResponse {
+        @statusCode _: 200;
+        meta: OffsetPaginationMeta;
+        links: OffsetPaginationLinks;
+        data: Principal[];
+    }
+
+    @route("{uuid}/principals/")
+    @doc("List principals who are members of this group. When principal_type is omitted it defaults to 'user', so the response contains only user principals. Set principal_type=all to get a unified Principal[] containing both users and service accounts, with the type field distinguishing them.")
+    @summary("List group principals")
+    @get op listPrincipals(
+        @path uuid: UUID;
+        @doc("Filter by principal type: 'user' (default), 'service-account', or 'all'. When 'all', returns both users and service accounts in a unified list.")
+        @query principal_type?: PrincipalTypeFilter = PrincipalTypeFilter.user;
+        @doc("Filter by username (substring match). Applies to user principals.")
+        @query username?: string;
+        @doc("Filter by principal username (case-insensitive substring match). Applies to both user and service-account principals.")
+        @query principal_username?: string;
+        @doc("When true, return only usernames without enrichment from external identity services. Applies to user principals only.")
+        @query username_only?: boolean = false;
+        @doc("When true, return only org admin users. Applies to user principals only.")
+        @query admin_only?: boolean = false;
+        @doc("Filter service accounts by display name (substring match). Only used when principal_type is 'service-account' or 'all'.")
+        @query service_account_name?: string;
+        @doc("Filter service accounts by description (substring match). Only used when principal_type is 'service-account' or 'all'.")
+        @query service_account_description?: string;
+        @doc("Check membership of specific service account client IDs (comma-separated). Incompatible with other filter parameters. Returns only the matching service accounts that are members of this group.")
+        @query service_account_client_ids?: string;
+        @query limit?: Limit = DefaultLimit;
+        @query offset?: Offset = DefaultOffset;
+        @query order_by?: string = "username";
+    ): PrincipalListResponse | Problems.CommonProblems | Problems.Problem404;
+
+    @doc("Add principals by username. service_accounts may also be supplied.")
+    model AddUsernamesInput {
+        @doc("Usernames to add. Must contain at least one item.")
+        @minItems(1)
+        usernames: string[];
+        @doc("Service account client IDs to add.")
+        @example(#["abc-123-def"])
+        @minItems(1)
+        service_accounts?: string[];
+    }
+
+    @doc("Add principals by service account client ID. usernames may also be supplied.")
+    model AddServiceAccountsInput {
+        @doc("Usernames to add.")
+        @minItems(1)
+        usernames?: string[];
+        @doc("Service account client IDs to add. Must contain at least one item.")
+        @example(#["abc-123-def"])
+        @minItems(1)
+        service_accounts: string[];
+    }
+
+    @doc("Principals to add to a group. At least one of usernames or service_accounts must be present and non-empty; an empty object is rejected.")
+    union AddPrincipalsInput {
+        AddUsernamesInput,
+        AddServiceAccountsInput,
+    }
+
+    @route("{uuid}/principals/")
+    @doc("Add principals to a group. At least one of usernames or service_accounts must contain items. Protected-group behavior: system groups return 400; platform_default and admin_default groups allow adding members.")
+    @summary("Add principals to a group")
+    @post op addPrincipals(
+        @path uuid: UUID;
+        @body body: AddPrincipalsInput;
+    ): ItemResponse<Group, 200> | Problems.CommonProblems | Problems.Problem404;
+
+    @route("{uuid}/principals/{principal_uuid}/")
+    @doc("Remove a single principal from a group by principal UUID. Protected-group behavior: system groups return 400. For bulk removal, use DELETE /groups/{uuid}/principals/ with query parameters.")
+    @summary("Remove a principal from a group")
+    @delete op removePrincipal(
+        @path uuid: UUID;
+        @path principal_uuid: UUID;
+    ): NoContentResponse | Problems.CommonProblems | Problems.Problem404;
+
+    @route("{uuid}/principals/")
+    @doc("Remove principals from a group in bulk. At least one of usernames or service_accounts must be provided. Note: V1 spelled this query parameter 'service-accounts'; V2 uses snake_case 'service_accounts' for consistency with the rest of the V2 contract. All specified principals must be members of the group; if any are not found, the request returns 404 and no removals are performed. Protected-group behavior: system groups return 400.")
+    @summary("Remove principals from a group in bulk")
+    @delete op removePrincipals(
+        @path uuid: UUID;
+        @doc("Comma-separated usernames to remove from the group")
+        @query usernames?: string;
+        @doc("Comma-separated service account client IDs to remove from the group")
+        @query service_accounts?: string;
+    ): NoContentResponse | Problems.CommonProblems | Problems.Problem404;
 }
