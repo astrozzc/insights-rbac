@@ -159,6 +159,14 @@ def v1_role_to_v2_bindings(
 
     _scope_service = ImplicitResourceService.from_settings()
 
+    is_ocm_role = (v1_role.external_tenant_name() or "").lower() == "ocm"
+    _default_ws_id: Optional[str] = None
+    if is_ocm_role:
+        try:
+            _default_ws_id = str(Workspace.objects.default(tenant=v1_role.tenant).id)
+        except Workspace.DoesNotExist:
+            _default_ws_id = None
+
     def _resolve_default(permission: Permission) -> V2boundresource:
         scope = _scope_service.scope_for_permission(permission.permission)
         return resource_for_scope(scope)
@@ -217,6 +225,12 @@ def v1_role_to_v2_bindings(
                     else:
                         continue
                 elif resource_id == "":
+                    continue
+                if (
+                    is_ocm_role
+                    and resource_type == ("rbac", "workspace")
+                    and str(resource_id) != _default_ws_id
+                ):
                     continue
                 add_element(perm_groupings, V2boundresource(resource_type, resource_id), permission, collection=set)
         if default:

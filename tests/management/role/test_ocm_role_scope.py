@@ -368,3 +368,157 @@ class OcmRoleBindingValidationTests(IdentityRequest):
             self._bound_role_uuids("custom_resource", "arbitrary-id"),
             set(),
         )
+
+
+@override_settings(ATOMIC_RETRY_DISABLED=True, V2_MIGRATION_APP_EXCLUDE_LIST=[])
+class OcmMigrationWorkspaceFilterTests(IdentityRequest):
+    """Migration tool must skip non-default workspace resources for OCM roles."""
+
+    def setUp(self):
+        super().setUp()
+        from api.models import Tenant
+
+        bootstrap_result = bootstrap_tenant_for_v2_test(self.tenant)
+        self.default_workspace = bootstrap_result.default_workspace
+
+        self.standard_workspace = Workspace.objects.create(
+            name="Standard WS",
+            tenant=self.tenant,
+            type=Workspace.Types.STANDARD,
+            parent=self.default_workspace,
+        )
+
+        self.public_tenant = Tenant.objects.get(tenant_name="public")
+        ocm_ext_tenant, _ = ExtTenant.objects.get_or_create(name="ocm")
+
+        # Create a V1 OCM role owned by this tenant with a group.id resource def
+        self.ocm_v1_role = Role.objects.create(
+            name="OCM Migration Test Role",
+            system=True,
+            tenant=self.tenant,
+            description="OCM role for migration test",
+        )
+        ExtRoleRelation.objects.create(
+            ext_id="OcmMigrationTestId",
+            ext_tenant=ocm_ext_tenant,
+            role=self.ocm_v1_role,
+        )
+
+        self.ocm_perm = Permission.objects.create(permission="ocm:cluster:read", tenant=self.public_tenant)
+        self.access = Access.objects.create(
+            permission=self.ocm_perm,
+            role=self.ocm_v1_role,
+            tenant=self.tenant,
+        )
+
+    def tearDown(self):
+        Workspace.objects.filter(tenant=self.tenant, type=Workspace.Types.STANDARD).delete()
+        super().tearDown()
+
+    def test_migration_skips_non_default_workspace_for_ocm_role(self):
+        """v1_role_to_v2_bindings must not create bindings for non-default workspaces on OCM roles."""
+        from management.role.model import ResourceDefinition
+        from migration_tool.sharedSystemRolesReplicatedRoleBindings import (
+            constant_bound_resource,
+            v1_role_to_v2_bindings,
+        )
+        from migration_tool.models import V2boundresource
+
+        # Add resource def pointing to a non-default (standard) workspace
+        ResourceDefinition.objects.create(
+            attributeFilter={
+                "key": "group.id",
+                "operation": "equal",
+                "value": str(self.standard_workspace.id),
+            },
+            access=self.access,
+            tenant=self.tenant,
+        )
+
+        default_resource = V2boundresource(("rbac", "workspace"), str(self.default_workspace.id))
+        result = v1_role_to_v2_bindings(
+            self.ocm_v1_role,
+            resource_for_scope=constant_bound_resource(default_resource),
+            existing_role_bindings=[],
+            existing_v2_roles=[],
+        )
+
+        # No bindings should reference the standard workspace
+        bound_resource_ids = {str(rb.resource_id) for rb in result.role_bindings}
+        self.assertNotIn(str(self.standard_workspace.id), bound_resource_ids)
+
+    def test_migration_keeps_default_workspace_for_ocm_role(self):
+        """v1_role_to_v2_bindings retains bindings for the default workspace on OCM roles."""
+        from management.role.model import ResourceDefinition
+        from migration_tool.sharedSystemRolesReplicatedRoleBindings import (
+            constant_bound_resource,
+            v1_role_to_v2_bindings,
+        )
+        from migration_tool.models import V2boundresource
+
+        # Add resource def pointing to the default workspace
+        ResourceDefinition.objects.create(
+            attributeFilter={
+                "key": "group.id",
+                "operation": "equal",
+                "value": str(self.default_workspace.id),
+            },
+            access=self.access,
+            tenant=self.tenant,
+        )
+
+        default_resource = V2boundresource(("rbac", "workspace"), str(self.default_workspace.id))
+        result = v1_role_to_v2_bindings(
+            self.ocm_v1_role,
+            resource_for_scope=constant_bound_resource(default_resource),
+            existing_role_bindings=[],
+            existing_v2_roles=[],
+        )
+
+        # Should have a binding for the default workspace
+        bound_resource_ids = {str(rb.resource_id) for rb in result.role_bindings}
+        self.assertIn(str(self.default_workspace.id), bound_resource_ids)
+
+    def test_migration_non_ocm_role_keeps_non_default_workspace(self):
+        """Non-OCM roles are not affected by the OCM workspace filter."""
+        from management.role.model import ResourceDefinition
+        from migration_tool.sharedSystemRolesReplicatedRoleBindings import (
+            constant_bound_resource,
+            v1_role_to_v2_bindings,
+        )
+        from migration_tool.models import V2boundresource
+
+        # Create a non-OCM V1 role with a group.id resource def for non-default workspace
+        non_ocm_role = Role.objects.create(
+            name="Regular Role",
+            system=False,
+            tenant=self.tenant,
+            description="Not OCM",
+        )
+        non_ocm_perm = Permission.objects.create(permission="inventory:hosts:write", tenant=self.tenant)
+        non_ocm_access = Access.objects.create(
+            permission=non_ocm_perm,
+            role=non_ocm_role,
+            tenant=self.tenant,
+        )
+        ResourceDefinition.objects.create(
+            attributeFilter={
+                "key": "group.id",
+                "operation": "equal",
+                "value": str(self.standard_workspace.id),
+            },
+            access=non_ocm_access,
+            tenant=self.tenant,
+        )
+
+        default_resource = V2boundresource(("rbac", "workspace"), str(self.default_workspace.id))
+        result = v1_role_to_v2_bindings(
+            non_ocm_role,
+            resource_for_scope=constant_bound_resource(default_resource),
+            existing_role_bindings=[],
+            existing_v2_roles=[],
+        )
+
+        # Non-OCM role should keep the standard workspace binding
+        bound_resource_ids = {str(rb.resource_id) for rb in result.role_bindings}
+        self.assertIn(str(self.standard_workspace.id), bound_resource_ids)
