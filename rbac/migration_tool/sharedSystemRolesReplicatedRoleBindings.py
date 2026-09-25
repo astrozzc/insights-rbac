@@ -121,9 +121,7 @@ class SystemRole:
             v2_perm = cleanNameForV2SchemaCompatibility(access.permission.permission)
             v2_perm = inventory_to_workspace(v2_perm)
             permission_list.append(v2_perm)
-        add_system_role(
-            cls.SYSTEM_ROLES, V2role(str(role.uuid), True, frozenset(permission_list))
-        )
+        add_system_role(cls.SYSTEM_ROLES, V2role(str(role.uuid), True, frozenset(permission_list)))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -139,17 +137,11 @@ class MigrateCustomRoleResult:
         if len(self.binding_mappings) != len(self.role_bindings):
             raise ValueError("BindingMappings and RoleBindings must be one-to-one")
 
-        if {str(r.uuid) for r in self.role_bindings} != {
-            m.mappings["id"] for m in self.binding_mappings
-        }:
+        if {str(r.uuid) for r in self.role_bindings} != {m.mappings["id"] for m in self.binding_mappings}:
             raise ValueError("BindingMapping and RoleBinding UUIDs must match")
 
-        if not {r.id for r in self.v2_roles}.issuperset(
-            b.role_id for b in self.role_bindings
-        ):
-            raise ValueError(
-                "All V2 roles referenced by RoleBindings must be included in v2_roles"
-            )
+        if not {r.id for r in self.v2_roles}.issuperset(b.role_id for b in self.role_bindings):
+            raise ValueError("All V2 roles referenced by RoleBindings must be included in v2_roles")
 
 
 def v1_role_to_v2_bindings(
@@ -203,9 +195,7 @@ def v1_role_to_v2_bindings(
                     # Skip empty values
                     continue
 
-            resource_type = attribute_key_to_v2_related_resource_type(
-                attri_filter["key"]
-            )
+            resource_type = attribute_key_to_v2_related_resource_type(attri_filter["key"])
 
             if resource_type is None:
                 # Resource type not mapped to v2
@@ -213,16 +203,11 @@ def v1_role_to_v2_bindings(
 
             # validate permission was not added to workspace out of users org for v1 (RHCLOUD-35481)
             if resource_type == ("rbac", "workspace"):
-                requested_workspace_ids = set(
-                    get_workspace_ids_from_resource_definition(attri_filter)
-                )
+                requested_workspace_ids = set(get_workspace_ids_from_resource_definition(attri_filter))
 
                 if len(requested_workspace_ids) > 0:
                     actual_workspace_ids = set(
-                        w.id
-                        for w in Workspace.objects.filter(
-                            tenant=v1_role.tenant, id__in=requested_workspace_ids
-                        )
+                        w.id for w in Workspace.objects.filter(tenant=v1_role.tenant, id__in=requested_workspace_ids)
                     )
 
                     if requested_workspace_ids != actual_workspace_ids:
@@ -245,11 +230,7 @@ def v1_role_to_v2_bindings(
                         continue
                 elif resource_id == "":
                     continue
-                if (
-                    is_ocm_role
-                    and resource_type == ("rbac", "workspace")
-                    and str(resource_id) != _default_ws_id
-                ):
+                if is_ocm_role and resource_type == ("rbac", "workspace") and str(resource_id) != _default_ws_id:
                     continue
                 add_element(
                     perm_groupings,
@@ -383,19 +364,13 @@ def permission_groupings_to_v2_role_bindings(
         raise ValueError("System roles are not supported.")
 
     if not all(r.v1_source == v1_role for r in existing_v2_roles):
-        raise ValueError(
-            f"All provided V2 roles ({existing_v2_roles}) must have v1_role ({v1_role}) as a source."
-        )
+        raise ValueError(f"All provided V2 roles ({existing_v2_roles}) must have v1_role ({v1_role}) as a source.")
 
     if not all(r.type == RoleV2.Types.CUSTOM for r in existing_v2_roles):
-        raise ValueError(
-            f"All provided V2 roles ({existing_v2_roles}) must be CUSTOM roles."
-        )
+        raise ValueError(f"All provided V2 roles ({existing_v2_roles}) must be CUSTOM roles.")
 
     requested_workspace_ids = set(
-        r.resource_id
-        for r in perm_groupings.keys()
-        if r.resource_type == ("rbac", "workspace")
+        r.resource_id for r in perm_groupings.keys() if r.resource_type == ("rbac", "workspace")
     )
 
     if len(requested_workspace_ids) > 0:
@@ -413,9 +388,7 @@ def permission_groupings_to_v2_role_bindings(
                 f"{requested_workspace_ids - locked_workspace_ids}"
             )
 
-    existing_mappings_by_resource = {
-        mapping.get_role_binding().resource: mapping for mapping in existing_mappings
-    }
+    existing_mappings_by_resource = {mapping.get_role_binding().resource: mapping for mapping in existing_mappings}
 
     latest_groups = frozenset(policy.group for policy in v1_role.policies.all())
     latest_group_uuids = frozenset(str(g.uuid) for g in latest_groups)
@@ -425,9 +398,7 @@ def permission_groupings_to_v2_role_bindings(
     latest_binding_mappings: list[BindingMapping] = []
 
     # Randomize any existing role names to ensure that we don't end up with any conflicts.
-    CustomRoleV2.objects.filter(pk__in=[r.pk for r in existing_v2_roles]).update(
-        name=F("uuid")
-    )
+    CustomRoleV2.objects.filter(pk__in=[r.pk for r in existing_v2_roles]).update(name=F("uuid"))
 
     for resource, raw_expected_permissions in perm_groupings.items():
         expected_permissions = frozenset(raw_expected_permissions)
@@ -437,11 +408,7 @@ def permission_groupings_to_v2_role_bindings(
         new_role = latest_roles_by_permissions.get(expected_permissions)
 
         if new_role is None:
-            existing_binding_value = (
-                existing_mapping.get_role_binding()
-                if existing_mapping is not None
-                else None
-            )
+            existing_binding_value = existing_mapping.get_role_binding() if existing_mapping is not None else None
 
             new_role = _v2_custom_role_from_v1(
                 v1_role=v1_role,
@@ -470,11 +437,7 @@ def permission_groupings_to_v2_role_bindings(
         latest_role_bindings.append(new_role_binding)
 
     # Ensure that the RoleBindings we're returning have the correct set of groups.
-    latest_binding_groups = [
-        RoleBindingGroup(binding=b, group=g)
-        for b in latest_role_bindings
-        for g in latest_groups
-    ]
+    latest_binding_groups = [RoleBindingGroup(binding=b, group=g) for b in latest_role_bindings for g in latest_groups]
 
     RoleBindingGroup.objects.filter(binding__in=latest_role_bindings).delete()
     RoleBindingGroup.objects.bulk_create(latest_binding_groups)

@@ -36,20 +36,14 @@ from tests.identity_request import IdentityRequest
 from tests.v2_util import bootstrap_tenant_for_v2_test
 
 
-def create_ocm_seeded_role(
-    name: str = "OCM Cluster Viewer", *, with_permission: bool = False
-) -> SeededRoleV2:
+def create_ocm_seeded_role(name: str = "OCM Cluster Viewer", *, with_permission: bool = False) -> SeededRoleV2:
     """Create a seeded OCM external role backed by a V1 role and ExtRoleRelation."""
     from api.models import Tenant
 
     public_tenant = Tenant.objects.get(tenant_name="public")
     ocm_ext_tenant, _ = ExtTenant.objects.get_or_create(name="ocm")
-    v1_role = Role.objects.create(
-        name=name, system=True, tenant=public_tenant, description="OCM external role"
-    )
-    ExtRoleRelation.objects.create(
-        ext_id=f"{name.replace(' ', '')}Id", ext_tenant=ocm_ext_tenant, role=v1_role
-    )
+    v1_role = Role.objects.create(name=name, system=True, tenant=public_tenant, description="OCM external role")
+    ExtRoleRelation.objects.create(ext_id=f"{name.replace(' ', '')}Id", ext_tenant=ocm_ext_tenant, role=v1_role)
     v2_role, _ = SeededRoleV2.objects.update_or_create(
         uuid=v1_role.uuid,
         defaults={
@@ -60,9 +54,7 @@ def create_ocm_seeded_role(
         },
     )
     if with_permission:
-        ocm_perm = Permission.objects.create(
-            permission="ocm:cluster:view", tenant=public_tenant
-        )
+        ocm_perm = Permission.objects.create(permission="ocm:cluster:view", tenant=public_tenant)
         v2_role.permissions.set([ocm_perm])
         Access.objects.create(permission=ocm_perm, role=v1_role, tenant=public_tenant)
     else:
@@ -116,9 +108,7 @@ class OcmRoleScopeHelperTests(IdentityRequest):
             tenant=public_tenant,
             description="other ext",
         )
-        ExtRoleRelation.objects.create(
-            ext_id="otherExtId", ext_tenant=other_ext_tenant, role=v1_role
-        )
+        ExtRoleRelation.objects.create(ext_id="otherExtId", ext_tenant=other_ext_tenant, role=v1_role)
         v2_role, _ = SeededRoleV2.objects.update_or_create(
             uuid=v1_role.uuid,
             defaults={
@@ -148,19 +138,13 @@ class OcmRoleScopeHelperTests(IdentityRequest):
             ),
         )
         self.assertFalse(
-            ocm_roles_allowed_for_workspace_binding(
-                "workspace", str(standard_ws.id), self.tenant
-            ),
+            ocm_roles_allowed_for_workspace_binding("workspace", str(standard_ws.id), self.tenant),
         )
         self.assertFalse(
-            ocm_roles_allowed_for_workspace_binding(
-                "workspace", str(bootstrap_result.root_workspace.id), self.tenant
-            ),
+            ocm_roles_allowed_for_workspace_binding("workspace", str(bootstrap_result.root_workspace.id), self.tenant),
         )
         self.assertFalse(
-            ocm_roles_allowed_for_workspace_binding(
-                "tenant", self.tenant.tenant_resource_id(), self.tenant
-            )
+            ocm_roles_allowed_for_workspace_binding("tenant", self.tenant.tenant_resource_id(), self.tenant)
         )
 
 
@@ -182,28 +166,22 @@ class OcmRoleV2ListTests(IdentityRequest):
             parent=self.default_workspace,
         )
         self.ocm_role = create_ocm_seeded_role()
-        self.non_ocm_role = RoleV2.objects.create(
-            name="inventory role", description="", tenant=self.tenant
-        )
-        inv_perm = Permission.objects.create(
-            permission="inventory:hosts:read", tenant=self.tenant
-        )
+        self.non_ocm_role = RoleV2.objects.create(name="inventory role", description="", tenant=self.tenant)
+        inv_perm = Permission.objects.create(permission="inventory:hosts:read", tenant=self.tenant)
         self.non_ocm_role.permissions.add(inv_perm)
 
     def tearDown(self):
         v2_role_excluded_application_permission_ids_cache.invalidate()
         RoleV2.objects.filter(tenant=self.tenant).delete()
         Permission.objects.filter(tenant=self.tenant).delete()
-        Workspace.objects.filter(
-            tenant=self.tenant, type=Workspace.Types.STANDARD
-        ).delete()
+        Workspace.objects.filter(tenant=self.tenant, type=Workspace.Types.STANDARD).delete()
         super().tearDown()
 
     def test_list_includes_ocm_role_for_default_workspace(self):
         names = set(
-            self.service.list(
-                {"resource_type": "workspace", "resource_id": self.default_workspace.id}
-            ).values_list("name", flat=True)
+            self.service.list({"resource_type": "workspace", "resource_id": self.default_workspace.id}).values_list(
+                "name", flat=True
+            )
         )
         self.assertIn(self.ocm_role.name, names)
 
@@ -221,44 +199,38 @@ class OcmRoleV2ListTests(IdentityRequest):
 
     def test_list_excludes_ocm_role_for_root_workspace(self):
         names = set(
-            self.service.list(
-                {"resource_type": "workspace", "resource_id": self.root_workspace.id}
-            ).values_list("name", flat=True)
+            self.service.list({"resource_type": "workspace", "resource_id": self.root_workspace.id}).values_list(
+                "name", flat=True
+            )
         )
         self.assertNotIn(self.ocm_role.name, names)
 
     @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=["ocm"])
     def test_list_hides_ocm_role_with_excluded_application_permissions(self):
         v2_role_excluded_application_permission_ids_cache.invalidate()
-        ocm_perm_role = create_ocm_seeded_role(
-            "OCM Cluster Editor", with_permission=True
-        )
+        ocm_perm_role = create_ocm_seeded_role("OCM Cluster Editor", with_permission=True)
         names = set(
-            self.service.list(
-                {"resource_type": "workspace", "resource_id": self.default_workspace.id}
-            ).values_list("name", flat=True)
+            self.service.list({"resource_type": "workspace", "resource_id": self.default_workspace.id}).values_list(
+                "name", flat=True
+            )
         )
         self.assertNotIn(ocm_perm_role.name, names)
 
     @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=[])
     def test_list_shows_ocm_role_when_not_in_exclude_list(self):
         v2_role_excluded_application_permission_ids_cache.invalidate()
-        ocm_perm_role = create_ocm_seeded_role(
-            "OCM Cluster Editor", with_permission=True
-        )
+        ocm_perm_role = create_ocm_seeded_role("OCM Cluster Editor", with_permission=True)
         names = set(
-            self.service.list(
-                {"resource_type": "workspace", "resource_id": self.default_workspace.id}
-            ).values_list("name", flat=True)
+            self.service.list({"resource_type": "workspace", "resource_id": self.default_workspace.id}).values_list(
+                "name", flat=True
+            )
         )
         self.assertIn(ocm_perm_role.name, names)
 
     @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=[])
     def test_list_excludes_ocm_role_without_resource_type(self):
         v2_role_excluded_application_permission_ids_cache.invalidate()
-        ocm_perm_role = create_ocm_seeded_role(
-            "OCM Cluster Editor", with_permission=True
-        )
+        ocm_perm_role = create_ocm_seeded_role("OCM Cluster Editor", with_permission=True)
         names = set(self.service.list({}).values_list("name", flat=True))
         self.assertNotIn(ocm_perm_role.name, names)
         self.assertIn(self.non_ocm_role.name, names)
@@ -267,13 +239,11 @@ class OcmRoleV2ListTests(IdentityRequest):
     def test_list_hides_ocm_role_with_multiple_excluded_apps(self):
         """OCM roles hidden when 'ocm' is one of several excluded apps."""
         v2_role_excluded_application_permission_ids_cache.invalidate()
-        ocm_perm_role = create_ocm_seeded_role(
-            "OCM Cluster Admin", with_permission=True
-        )
+        ocm_perm_role = create_ocm_seeded_role("OCM Cluster Admin", with_permission=True)
         names = set(
-            self.service.list(
-                {"resource_type": "workspace", "resource_id": self.default_workspace.id}
-            ).values_list("name", flat=True)
+            self.service.list({"resource_type": "workspace", "resource_id": self.default_workspace.id}).values_list(
+                "name", flat=True
+            )
         )
         self.assertNotIn(ocm_perm_role.name, names)
 
@@ -281,11 +251,7 @@ class OcmRoleV2ListTests(IdentityRequest):
     def test_list_includes_ocm_role_when_resource_type_workspace_no_id(self):
         """OCM roles visible when listing for resource_type=workspace without a specific ID."""
         v2_role_excluded_application_permission_ids_cache.invalidate()
-        names = set(
-            self.service.list({"resource_type": "workspace"}).values_list(
-                "name", flat=True
-            )
-        )
+        names = set(self.service.list({"resource_type": "workspace"}).values_list("name", flat=True))
         self.assertIn(self.ocm_role.name, names)
 
 
@@ -311,9 +277,7 @@ class OcmRoleBindingValidationTests(IdentityRequest):
 
     def tearDown(self):
         v2_role_excluded_application_permission_ids_cache.invalidate()
-        Workspace.objects.filter(
-            tenant=self.tenant, type=Workspace.Types.STANDARD
-        ).delete()
+        Workspace.objects.filter(tenant=self.tenant, type=Workspace.Types.STANDARD).delete()
         super().tearDown()
 
     def _create_group(self):
@@ -355,9 +319,7 @@ class OcmRoleBindingValidationTests(IdentityRequest):
                 role_ids=[str(self.ocm_role.uuid)],
             )
         self.assertIn("OCM Cluster Viewer", str(ctx.exception))
-        self.assertEqual(
-            self._bound_role_uuids("workspace", str(self.standard_workspace.id)), set()
-        )
+        self.assertEqual(self._bound_role_uuids("workspace", str(self.standard_workspace.id)), set())
 
     def test_rejects_ocm_role_on_root_workspace(self):
         with self.assertRaises(InvalidFieldError) as ctx:
@@ -369,9 +331,7 @@ class OcmRoleBindingValidationTests(IdentityRequest):
                 role_ids=[str(self.ocm_role.uuid)],
             )
         self.assertIn("OCM Cluster Viewer", str(ctx.exception))
-        self.assertEqual(
-            self._bound_role_uuids("workspace", str(self.root_workspace.id)), set()
-        )
+        self.assertEqual(self._bound_role_uuids("workspace", str(self.root_workspace.id)), set())
 
     def test_rejects_ocm_role_on_tenant(self):
         with self.assertRaises(InvalidFieldError) as ctx:
@@ -390,9 +350,7 @@ class OcmRoleBindingValidationTests(IdentityRequest):
 
     def test_rejects_ocm_role_with_permissions_on_standard_workspace(self):
         """OCM-specific validation applies even when the role has workspace-granular permissions."""
-        ocm_perm_role = create_ocm_seeded_role(
-            "OCM Cluster Provisioner", with_permission=True
-        )
+        ocm_perm_role = create_ocm_seeded_role("OCM Cluster Provisioner", with_permission=True)
         with self.assertRaises(InvalidFieldError) as ctx:
             self.service.update_role_bindings_for_subject(
                 resource_type="workspace",
@@ -405,9 +363,7 @@ class OcmRoleBindingValidationTests(IdentityRequest):
             "OCM roles can only be assigned at the Default Workspace",
             str(ctx.exception),
         )
-        self.assertEqual(
-            self._bound_role_uuids("workspace", str(self.standard_workspace.id)), set()
-        )
+        self.assertEqual(self._bound_role_uuids("workspace", str(self.standard_workspace.id)), set())
 
     def test_rejects_ocm_role_on_arbitrary_resource_type(self):
         """OCM check fires for non-workspace/non-tenant resource types too."""
@@ -462,9 +418,7 @@ class OcmMigrationWorkspaceFilterTests(IdentityRequest):
             role=self.ocm_v1_role,
         )
 
-        self.ocm_perm = Permission.objects.create(
-            permission="ocm:cluster:read", tenant=self.public_tenant
-        )
+        self.ocm_perm = Permission.objects.create(permission="ocm:cluster:read", tenant=self.public_tenant)
         self.access = Access.objects.create(
             permission=self.ocm_perm,
             role=self.ocm_v1_role,
@@ -472,9 +426,7 @@ class OcmMigrationWorkspaceFilterTests(IdentityRequest):
         )
 
     def tearDown(self):
-        Workspace.objects.filter(
-            tenant=self.tenant, type=Workspace.Types.STANDARD
-        ).delete()
+        Workspace.objects.filter(tenant=self.tenant, type=Workspace.Types.STANDARD).delete()
         super().tearDown()
 
     def test_migration_skips_non_default_workspace_for_ocm_role(self):
@@ -497,9 +449,7 @@ class OcmMigrationWorkspaceFilterTests(IdentityRequest):
             tenant=self.tenant,
         )
 
-        default_resource = V2boundresource(
-            ("rbac", "workspace"), str(self.default_workspace.id)
-        )
+        default_resource = V2boundresource(("rbac", "workspace"), str(self.default_workspace.id))
         result = v1_role_to_v2_bindings(
             self.ocm_v1_role,
             resource_for_scope=constant_bound_resource(default_resource),
@@ -540,9 +490,7 @@ class OcmMigrationWorkspaceFilterTests(IdentityRequest):
             tenant=self.tenant,
         )
 
-        default_resource = V2boundresource(
-            ("rbac", "workspace"), str(self.default_workspace.id)
-        )
+        default_resource = V2boundresource(("rbac", "workspace"), str(self.default_workspace.id))
         result = v1_role_to_v2_bindings(
             self.ocm_v1_role,
             resource_for_scope=constant_bound_resource(default_resource),
@@ -579,9 +527,7 @@ class OcmMigrationWorkspaceFilterTests(IdentityRequest):
             tenant=self.tenant,
             description="Not OCM",
         )
-        non_ocm_perm = Permission.objects.create(
-            permission="inventory:hosts:write", tenant=self.tenant
-        )
+        non_ocm_perm = Permission.objects.create(permission="inventory:hosts:write", tenant=self.tenant)
         non_ocm_access = Access.objects.create(
             permission=non_ocm_perm,
             role=non_ocm_role,
@@ -597,9 +543,7 @@ class OcmMigrationWorkspaceFilterTests(IdentityRequest):
             tenant=self.tenant,
         )
 
-        default_resource = V2boundresource(
-            ("rbac", "workspace"), str(self.default_workspace.id)
-        )
+        default_resource = V2boundresource(("rbac", "workspace"), str(self.default_workspace.id))
         result = v1_role_to_v2_bindings(
             non_ocm_role,
             resource_for_scope=constant_bound_resource(default_resource),
