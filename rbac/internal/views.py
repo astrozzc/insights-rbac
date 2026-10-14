@@ -3017,6 +3017,83 @@ def _run_seeded_role_hierarchy_check(dry_run: bool = False) -> dict:
     return result
 
 
+def _run_seeded_role_permissions_check(dry_run: bool = False) -> dict:
+    """Check platform-global seeded role permission tuples (role#<permission>@principal:*).
+
+    Seeded (system) role permissions are, like seeded role hierarchy (see
+    _run_seeded_role_hierarchy_check), shared across all orgs rather than scoped to a single
+    tenant, so they are checked once here instead of per-tenant in _run_tenant_migration_checks.
+    This is distinct from "role_permissions" in _run_tenant_migration_checks, which only covers
+    CustomRoleV2 -- seeded roles are intentionally excluded there.
+
+    Read-only: permission tuples are recomputed from current DB state (SeededRoleV2 + its
+    permissions), nothing is written to the database or to Inventory. When `dry_run` is True, no
+    Inventory gRPC call is made -- each tuple is instead validated via `validate_generated_tuples`.
+    """
+    role_results = []
+    all_correct = True
+
+    seeded_roles = SeededRoleV2.objects.select_related("v1_source").prefetch_related("permissions")
+
+    for seeded_role in seeded_roles:
+        try:
+            permission_tuples = [
+                SeededRoleV2._permission_tuple(seeded_role, perm) for perm in seeded_role.permissions.all()
+            ]
+            if not permission_tuples:
+                continue
+
+            if dry_run:
+                validation = validate_generated_tuples(permission_tuples)
+                role_results.append(
+                    {
+                        "role_uuid": str(seeded_role.uuid),
+                        "role_name": seeded_role.name,
+                        "v1_role_name": seeded_role.v1_source.name if seeded_role.v1_source else None,
+                        "tuples_generated": len(permission_tuples),
+                        "checked": False,
+                        "validation": validation,
+                    }
+                )
+                if not validation["valid"]:
+                    all_correct = False
+                continue
+
+            role_correct = CustomRolePermissionCheckerInstance.check_custom_role_permissions(
+                permission_tuples, str(seeded_role.uuid)
+            )
+            role_results.append(
+                {
+                    "role_uuid": str(seeded_role.uuid),
+                    "role_name": seeded_role.name,
+                    "v1_role_name": seeded_role.v1_source.name if seeded_role.v1_source else None,
+                    "tuples_generated": len(permission_tuples),
+                    "correct": role_correct,
+                }
+            )
+            if not role_correct:
+                all_correct = False
+        except Exception as e:
+            logger.exception(f"Error checking seeded role permissions for role {seeded_role.uuid}")
+            role_results.append(
+                {
+                    "role_uuid": str(seeded_role.uuid),
+                    "role_name": seeded_role.name,
+                    "error": str(e),
+                }
+            )
+            all_correct = False
+
+    result = {
+        "correct": all_correct,
+        "total_seeded_roles": seeded_roles.count(),
+        "roles_checked": role_results,
+    }
+    if dry_run:
+        result["dry_run"] = True
+    return result
+
+
 def verify_migration_global(request):
     """GET to verify relations-to-inventory migration correctness without picking a single org.
 
@@ -3028,8 +3105,10 @@ def verify_migration_global(request):
     _run_tenant_migration_checks and validate_generated_tuples) with zero Inventory gRPC calls,
     instead of checking against the real Inventory API.
 
-    Runs the platform-global seeded role hierarchy check (see _run_seeded_role_hierarchy_check),
-    plus the full per-tenant check suite (see _run_tenant_migration_checks -- the exact same
+    Runs the platform-global seeded role checks (hierarchy tuples, see
+    _run_seeded_role_hierarchy_check; and permission tuples, see
+    _run_seeded_role_permissions_check), plus the full per-tenant check suite (see
+    _run_tenant_migration_checks -- the exact same
     function GET /_private/api/inventory/verify_migration/<org_id>/ uses, so there is a single
     implementation of each check shared by both endpoints) for a set of tenants:
 
@@ -3068,7 +3147,8 @@ def verify_migration_global(request):
         tenants = list(Tenant.objects.filter(ready=True).exclude(tenant_name="public").order_by("-id")[:org_limit])
 
     seeded_role_hierarchy = _run_seeded_role_hierarchy_check(dry_run=dry_run)
-    overall_failed = not seeded_role_hierarchy["correct"]
+    seeded_role_permissions = _run_seeded_role_permissions_check(dry_run=dry_run)
+    overall_failed = not seeded_role_hierarchy["correct"] or not seeded_role_permissions["correct"]
 
     tenant_reports = []
     tenants_skipped = []
@@ -3095,7 +3175,10 @@ def verify_migration_global(request):
     return JsonResponse(
         {
             "dry_run": dry_run,
-            "checks": {"seeded_role_hierarchy": seeded_role_hierarchy},
+            "checks": {
+                "seeded_role_hierarchy": seeded_role_hierarchy,
+                "seeded_role_permissions": seeded_role_permissions,
+            },
             "tenants_checked": tenant_reports,
             "tenants_skipped": tenants_skipped,
             "overall_status": "fail" if overall_failed else "pass",
