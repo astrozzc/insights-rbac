@@ -149,7 +149,7 @@ class ITSSOTokenValidator(TokenValidator):
         try:
             token: Token = jwt.decode(value=bearer_token, key=key_set)
         except Exception as e:
-            logging.warning("[request_id: %s] Unable to decode token: %s", getattr(request, "req_id", None), str(e))
+            logger.warning("[request_id: %s] Unable to decode token: %s", getattr(request, "req_id", None), str(e))
             raise InvalidTokenError("Unable to decode token")
 
         # Make sure that the token issuer matches the IT issuer and that the scope contains the "service accounts"
@@ -178,7 +178,7 @@ class ITSSOTokenValidator(TokenValidator):
             # below.
             claim_requests.validate(token.claims)
         except Exception as e:
-            logging.warning(
+            logger.warning(
                 "[request_id: %s] Token rejected for having invalid claims: %s",
                 getattr(request, "req_id", "no-request-id-present"),
                 str(e),
@@ -218,13 +218,23 @@ class ITSSOTokenValidator(TokenValidator):
         one tenant with a bearer token scoped to a different tenant's IT resources.
 
         SSO user tokens carry the organization ID as a top-level "org_id" claim, so that one is read first;
-        the nested "organization.id" claim is the fallback for tokens that only carry that shape.
+        the nested "organization.id" claim is the fallback for tokens that only carry that shape, and the
+        top-level "rh-org-id" claim is the last fallback for the shape SSO issues to service accounts. When
+        none of the claims carry a value, no organization ID is returned and the caller rejects the request.
         """
         if settings.IT_BYPASS_TOKEN_VALIDATION:
             return "mocked-invalid-bearer-token-because-token-validation-is-disabled", None
 
         bearer_token, token = self._validate_token(request, additional_scopes_to_validate)
-        return bearer_token, token.claims.get("org_id") or (token.claims.get("organization") or {}).get("id")
+        candidates = (
+            token.claims.get("org_id"),
+            (token.claims.get("organization") or {}).get("id"),
+            token.claims.get("rh-org-id"),
+        )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return bearer_token, candidate.strip()
+        return bearer_token, None
 
     def _parse_claims(self, user: User, jwt: Token) -> None:
         super()._parse_claims(user, jwt)

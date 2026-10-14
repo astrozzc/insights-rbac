@@ -874,7 +874,7 @@ class TokenValidatorTests(IdentityRequest):
         )
 
     def test_validate_token_and_org_id_claim_precedence(self) -> None:
-        """Test that the top-level "org_id" claim takes precedence over the nested "organization.id" claim."""
+        """Test the "org_id" > "organization.id" > "rh-org-id" precedence of the organization ID claims."""
         issuer = InMemoryIssuer.generate()
         self.token_validator.set_jwks_source(issuer, issuer.iss)
 
@@ -882,9 +882,20 @@ class TokenValidatorTests(IdentityRequest):
 
         for description, org_claims, expected_org_id in [
             ("top-level org_id only, the real SSO user token shape", {"org_id": "org1"}, "org1"),
+            ("selected org_id is trimmed", {"org_id": " org1 "}, "org1"),
             ("both claims present, top-level wins", {"org_id": "org1", "organization": {"id": "org2"}}, "org1"),
             ("blank org_id falls back to the nested claim", {"org_id": "", "organization": {"id": "org2"}}, "org2"),
-            ("neither claim present", {}, None),
+            ("rh-org-id only, the real SSO service account token shape", {"rh-org-id": "org3"}, "org3"),
+            ("blank org_id falls back to rh-org-id", {"org_id": "", "rh-org-id": "org3"}, "org3"),
+            ("whitespace-only org_id falls back to rh-org-id", {"org_id": "  ", "rh-org-id": "org3"}, "org3"),
+            ("org_id wins over rh-org-id", {"org_id": "org1", "rh-org-id": "org3"}, "org1"),
+            (
+                "nested claim wins over rh-org-id",
+                {"organization": {"id": "org2"}, "rh-org-id": "org3"},
+                "org2",
+            ),
+            ("no claim present", {}, None),
+            ("all claims blank", {"org_id": "", "organization": {}, "rh-org-id": ""}, None),
         ]:
             with self.subTest(description=description):
                 token = issuer.issue_jwt({}, {"sub": "u1", "preferred_username": "user1", **org_claims})

@@ -285,6 +285,32 @@ This approach ensures:
 - **Fault Tolerance**: Temporary issues don't cause data loss
 - **Idempotent Restarts**: Safe to restart the consumer at any time
 
+## Async Rebalance Listener Threading Model
+
+The consumer uses `AsyncConsumerRebalanceListener` (kafka-python 3.0.11) to handle partition rebalance events without blocking the IO thread. Both `on_partitions_assigned` and `on_partitions_revoked` are async coroutines that dispatch blocking work to a background thread via `_run_in_thread`, which uses `kafka.future.Future` + `threading.Thread`.
+
+### Why a worker thread is needed
+
+Rebalance callbacks run as coroutines on the IO thread (NetworkSelector). Calling blocking operations directly (e.g., `consumer.commit()`, gRPC lock acquisition) from the IO thread would deadlock: `consumer.commit()` internally calls `net.run()`, which raises `RuntimeError("Cannot block on net.run() from the IO thread itself")`.
+
+### Thread-safety of consumer calls from the worker thread
+
+The worker thread calls `OffsetManager.commit()`, which uses `consumer.assignment()` and `consumer.commit(offsets=...)`. Both are safe to call from a non-IO thread:
+
+- **`assignment()`** delegates to `SubscriptionState.assigned_partitions()`, which is `@synchronized` (acquires an `RLock`) and returns a copy of local state. No network IO involved. (subscription_state.py L349)
+
+- **`commit()`** calls `ConsumerCoordinator.commit_offsets_sync()`, which uses `net.run(coroutine)`. When the caller is not the IO thread, `NetworkSelector.run()` enqueues the coroutine via `call_soon()`, wakes the selector, and blocks on a `threading.Event` until the IO thread processes the request. The docstring states: *"Safe to call concurrently from multiple caller threads."* (selector.py L357-362)
+
+### No deadlock risk
+
+The async rebalance callback `await`s a `KafkaFuture` returned by `_run_in_thread`. This yields control back to the NetworkSelector, which continues its poll loop (heartbeats, IO). When the worker thread's `commit()` call enqueues work via `call_soon()`, the selector picks it up and runs it on the IO thread. The sequence completes without circular blocking:
+
+1. Async callback yields `KafkaFuture` → selector continues polling
+2. Worker thread calls `commit()` → `net.run()` → enqueues on selector → blocks on `Event`
+3. Selector processes enqueued commit coroutine → sets `Event`
+4. Worker thread unblocks → resolves `KafkaFuture` → calls `net.wakeup()`
+5. Selector wakes → resumes the rebalance callback coroutine
+
 ## Monitoring & Observability
 
 The consumer provides comprehensive metrics for production monitoring and alerting.
