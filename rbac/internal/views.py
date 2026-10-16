@@ -78,7 +78,6 @@ from management.inventory_checker.inventory_api_check import (
     RoleRelationInventoryChecker,
     SeededRoleHierarchyChecker,
     WorkspaceRelationInventoryChecker,
-    generate_seeded_role_hierarchy_tuples,
 )
 from management.inventory_replicator.inventory_api_replicator import InventoryApiReplicator
 from management.inventory_replicator.inventory_replicator import (
@@ -147,6 +146,7 @@ from management.utils import (
     get_principal,
     groups_for_principal,
 )
+from management.workspace.inventory_api_dual_write_workspace_handler import InventoryApiDualWriteWorkspaceHandler
 from management.workspace.model import Workspace
 from management.workspace.serializer import WorkspaceSerializer
 from migration_tool.in_memory_tuples import InMemoryRelationReplicator, InMemoryTuples
@@ -2581,23 +2581,39 @@ def _run_tenant_migration_checks(
       - group_principals: group membership relations
       - cross_account_requests: relations created for approved cross-account requests targeting
         this org
+      - cross_account_requests_removed: relations removed when a cross-account request targeting
+        this org expired -- the inverse of cross_account_requests; a relation still present here
+        is the failure case, since it means the expired grant was never cleaned up. Roles still
+        granted to the same user via a different, currently-approved CAR are excluded from this
+        check, since an expired CAR's role can't be distinguished from one that was never actually
+        approved in the first place, and removal can't be checked for a role another active CAR
+        still legitimately grants
 
     This is read-only: nothing is written to the database or to Inventory. For roles and
     cross-account requests, the relation tuples are recomputed by re-running the same dual-write
     handlers used in production against an in-memory replicator, inside a transaction that is
-    always rolled back -- this re-derives what *should* exist without ever writing it. Role
-    bindings and group memberships are read directly off existing DB state, since their
-    tuple-generation methods are pure (no handler/transaction needed).
+    always rolled back -- this re-derives what *should* exist without ever writing it. Workspaces
+    and group memberships also go through their production dual-write handlers
+    (InventoryApiDualWriteWorkspaceHandler, InventoryApiDualWriteGroupHandler), but don't need a
+    transaction since their tuple-generation methods are pure (no DB writes happen even without
+    one). Role bindings and role permissions are read directly off existing DB state via their
+    own pure tuple-generation methods, with no handler involved at all.
 
-    When `dry_run` is True, no Inventory gRPC calls are made at all: for roles, bindings,
-    role_permissions, group_principals, and cross_account_requests, the same tuple-generation
-    code still runs, and each tuple is validated via `validate_generated_tuples` instead of
-    checked against Inventory -- proving the migration's tuple-generation logic is sound, but NOT
-    that Inventory actually has the tuple or that the Inventory gRPC client code
-    (inventory_checker.inventory_api_check) works. Bootstrap and workspaces are reported as just
-    the resource ids / pairs in scope, since BootstrappedTenantChecker/WorkspaceRelationChecker
-    fuse tuple-building and the gRPC check together and have no separate tuple-building step to
-    call in isolation.
+    When `dry_run` is True, no Inventory gRPC calls are made at all: for workspaces, roles,
+    bindings, role_permissions, group_principals, and cross_account_requests, the same
+    tuple-generation code still runs, and each tuple is validated via `validate_generated_tuples`
+    instead of checked against Inventory -- proving the migration's tuple-generation logic is
+    sound, but NOT that Inventory actually has the tuple or that the Inventory gRPC client code
+    (inventory_checker.inventory_api_check) works. For workspaces specifically, dry_run exercises
+    all three of InventoryApiDualWriteWorkspaceHandler's generation methods: the create and delete
+    paths (whose output is structurally identical, just validated together), plus the update
+    (move) path's "no change" guard -- confirming that re-parenting a workspace to its current
+    parent correctly emits no relations, since a missing guard there would mean every workspace
+    read emits spurious events during a real move. It does not exercise the update path's
+    "actually changed" branch, since that needs a real previous parent, which isn't available from
+    current DB state alone. Bootstrap is reported as just the resource ids in scope, since
+    BootstrappedTenantChecker fuses tuple-building and the gRPC check together and has no separate
+    tuple-building step to call in isolation.
 
     A failure in one item (e.g. a single role or a transient gRPC error) is recorded against that
     item only and does not abort the rest of the report, so a single bad item can't hide the
@@ -2639,15 +2655,72 @@ def _run_tenant_migration_checks(
         failed_checks.append("bootstrap")
 
     try:
-        workspace_pairs = [
-            (str(w.id), str(w.parent_id))
-            for w in Workspace.objects.filter(tenant=tenant, parent__isnull=False).exclude(type=Workspace.Types.ROOT)[
+        workspaces = list(
+            Workspace.objects.filter(tenant=tenant, parent__isnull=False).exclude(type=Workspace.Types.ROOT)[
                 :workspace_limit
             ]
-        ]
+        )
         if dry_run:
-            checks["workspaces"] = {"dry_run": True, "workspace_pairs_in_scope": workspace_pairs}
+            workspace_results = []
+            workspaces_all_correct = True
+            for workspace in workspaces:
+                add_handler = InventoryApiDualWriteWorkspaceHandler(
+                    workspace=workspace, event_type=ReplicationEventType.CREATE_WORKSPACE
+                )
+                add_handler.generate_relations_to_add_workspace()
+
+                remove_handler = InventoryApiDualWriteWorkspaceHandler(
+                    workspace=workspace, event_type=ReplicationEventType.DELETE_WORKSPACE
+                )
+                remove_handler.generate_relations_to_remove_workspace()
+
+                # Moving a workspace to its current parent must be a no-op.
+                noop_handler = InventoryApiDualWriteWorkspaceHandler(
+                    workspace=workspace, event_type=ReplicationEventType.UPDATE_WORKSPACE
+                )
+                noop_handler.generate_relations_to_update_workspace(previous_parent=workspace.parent)
+
+                # getattr: unset when replication is disabled.
+                add_tuples = getattr(add_handler, "relations_to_add", [])
+                remove_tuples = getattr(remove_handler, "relations_to_remove", [])
+                update_noop_add = getattr(noop_handler, "relations_to_add", [])
+                update_noop_remove = getattr(noop_handler, "relations_to_remove", [])
+                update_noop_correct = not update_noop_add and not update_noop_remove
+
+                # add/remove produce the same tuple for an unchanged parent; dedupe before counting.
+                generated_tuples = list({*add_tuples, *remove_tuples})
+                if not generated_tuples:
+                    workspace_results.append(
+                        {
+                            "workspace_id": str(workspace.id),
+                            "parent_id": str(workspace.parent_id),
+                            "tuples_generated": 0,
+                            "verified": False,
+                        }
+                    )
+                    continue
+                validation = validate_generated_tuples(generated_tuples)
+                workspace_results.append(
+                    {
+                        "workspace_id": str(workspace.id),
+                        "parent_id": str(workspace.parent_id),
+                        "tuples_generated": len(generated_tuples),
+                        "checked": False,
+                        "validation": validation,
+                        "update_noop_correct": update_noop_correct,
+                    }
+                )
+                if not validation["valid"] or not update_noop_correct:
+                    workspaces_all_correct = False
+            checks["workspaces"] = {
+                "dry_run": True,
+                "correct": workspaces_all_correct,
+                "workspaces_checked": workspace_results,
+            }
+            if not workspaces_all_correct:
+                failed_checks.append("workspaces")
         else:
+            workspace_pairs = [(str(w.id), str(w.parent_id)) for w in workspaces]
             if workspace_pairs:
                 workspaces_correct, workspace_checks = WorkspaceRelationChecker.check_workspace_descendants(
                     workspace_pairs
@@ -2824,7 +2897,12 @@ def _run_tenant_migration_checks(
     for group in Group.objects.filter(tenant=tenant).prefetch_related("principals")[:group_limit]:
         try:
             principals = list(group.principals.all())
-            relationships = [r for r in (group.relationship_to_principal(p) for p in principals) if r is not None]
+            handler = InventoryApiDualWriteGroupHandler(
+                group=group, event_type=ReplicationEventType.ADD_PRINCIPALS_TO_GROUP
+            )
+            handler.generate_relations_to_add_principals(principals)
+            # getattr: unset when replication is disabled.
+            relationships = getattr(handler, "relations_to_add", [])
             if not relationships:
                 if principals:
                     # Principals exist but no relation tuples could be built for them -- report as
@@ -2920,6 +2998,92 @@ def _run_tenant_migration_checks(
     if not cars_all_correct:
         failed_checks.append("cross_account_requests")
 
+    removed_car_results = []
+    removed_cars_all_correct = True
+    expired_cars = CrossAccountRequest.objects.filter(target_org=tenant.org_id, status="expired").prefetch_related(
+        "roles"
+    )[:car_limit]
+    # "expired" also covers never-approved "pending" CARs, so exclude roles still granted to the
+    # same user via another active CAR -- otherwise removal would be falsely flagged as failed.
+    active_roles_by_user: dict[str, set] = {}
+    for active_car in CrossAccountRequest.objects.filter(
+        target_org=tenant.org_id, status=CrossAccountRequest.STATUS_APPROVED
+    ).prefetch_related("roles"):
+        active_roles_by_user.setdefault(active_car.user_id, set()).update(role.pk for role in active_car.roles.all())
+    for car in expired_cars:
+        try:
+            still_active_role_pks = active_roles_by_user.get(car.user_id, set())
+            all_car_roles = list(car.roles.all())
+            if not all_car_roles:
+                removed_car_results.append({"request_id": str(car.request_id), "tuples_generated": 0, "correct": True})
+                continue
+
+            cross_account_roles = [role for role in all_car_roles if role.pk not in still_active_role_pks]
+            if not cross_account_roles:
+                removed_car_results.append(
+                    {"request_id": str(car.request_id), "tuples_generated": 0, "verified": False}
+                )
+                continue
+
+            with transaction.atomic():
+                car_dual_write_handler = InventoryApiDualWriteCrossAccessHandler(
+                    cross_account_request=car,
+                    event_type=ReplicationEventType.EXPIRE_CROSS_ACCOUNT_REQUEST,
+                )
+                car_dual_write_handler.generate_relations_to_remove_roles(cross_account_roles)
+                # getattr: unset when replication is disabled.
+                remove_tuples = getattr(car_dual_write_handler, "relations_to_remove", [])
+                # Ensure that we don't accidentally update any models.
+                transaction.set_rollback(True)
+
+            if dry_run:
+                validation = validate_generated_tuples(remove_tuples)
+                removed_car_results.append(
+                    {
+                        "request_id": str(car.request_id),
+                        "tuples_generated": len(remove_tuples),
+                        "checked": False,
+                        "validation": validation,
+                    }
+                )
+                if not validation["valid"]:
+                    removed_cars_all_correct = False
+                continue
+
+            if len(remove_tuples) == 0:
+                removed_car_results.append(
+                    {"request_id": str(car.request_id), "tuples_generated": 0, "verified": False}
+                )
+                continue
+
+            # Inverted from the "add" check above: still present here means removal failed.
+            relations_still_present = CrossAccountRequestChecker.check_cross_account_request(
+                remove_tuples, str(car.request_id)
+            )
+            removal_correct = not relations_still_present
+            removed_car_results.append(
+                {
+                    "request_id": str(car.request_id),
+                    "tuples_generated": len(remove_tuples),
+                    "relations_still_present": relations_still_present,
+                    "correct": removal_correct,
+                }
+            )
+            if not removal_correct:
+                removed_cars_all_correct = False
+        except Exception as e:
+            logger.exception(f"Error checking removed cross account request {car.request_id} for tenant {org_id}")
+            removed_car_results.append({"request_id": str(car.request_id), "error": str(e)})
+            removed_cars_all_correct = False
+    checks["cross_account_requests_removed"] = {
+        "correct": removed_cars_all_correct,
+        "requests_checked": removed_car_results,
+    }
+    if dry_run:
+        checks["cross_account_requests_removed"]["dry_run"] = True
+    if not removed_cars_all_correct:
+        failed_checks.append("cross_account_requests_removed")
+
     return checks, failed_checks
 
 
@@ -2951,8 +3115,11 @@ def _run_seeded_role_hierarchy_check(dry_run: bool = False) -> dict:
     checked once here rather than per-tenant in _run_tenant_migration_checks.
 
     Read-only: hierarchy tuples are recomputed from current DB state (SeededRoleV2 + its
-    v1_source), nothing is written to the database or to Inventory. When `dry_run` is True, no
-    Inventory gRPC call is made -- each tuple is instead validated via `validate_generated_tuples`.
+    v1_source) by calling SeedingInventoryApiDualWriteHandler._check_create_admin_platform_relation()
+    directly -- the same production method the seeding dual-write path uses -- so this exercises
+    the actual migrated logic rather than a reimplementation of it. Nothing is written to the
+    database or to Inventory. When `dry_run` is True, no Inventory gRPC call is made -- each tuple
+    is instead validated via `validate_generated_tuples`.
     """
     role_results = []
     all_correct = True
@@ -2961,8 +3128,14 @@ def _run_seeded_role_hierarchy_check(dry_run: bool = False) -> dict:
     implicit_resource_service = ImplicitResourceService.from_settings() if seeded_roles.exists() else None
 
     for seeded_role in seeded_roles:
+        v1_role = seeded_role.v1_source
+        if v1_role is None:
+            logger.warning(f"SeededRole {seeded_role.uuid} has no v1_source, cannot generate hierarchy tuples")
+            continue
         try:
-            hierarchy_tuples = generate_seeded_role_hierarchy_tuples(seeded_role, implicit_resource_service)
+            handler = SeedingInventoryApiDualWriteHandler(role=v1_role)
+            handler.implicit_resource_service = implicit_resource_service
+            hierarchy_tuples = handler._check_create_admin_platform_relation(v1_role, for_removal=False)
             if not hierarchy_tuples:
                 continue
 
@@ -3027,19 +3200,30 @@ def _run_seeded_role_permissions_check(dry_run: bool = False) -> dict:
     CustomRoleV2 -- seeded roles are intentionally excluded there.
 
     Read-only: permission tuples are recomputed from current DB state (SeededRoleV2 + its
-    permissions), nothing is written to the database or to Inventory. When `dry_run` is True, no
-    Inventory gRPC call is made -- each tuple is instead validated via `validate_generated_tuples`.
+    v1_source) by calling SeedingInventoryApiDualWriteHandler._generate_relations_for_role()
+    directly -- the same production method the seeding dual-write path uses to build both
+    hierarchy and permission relations together -- so this exercises the actual migrated logic
+    rather than a reimplementation of it. The "child" hierarchy relations it also returns are
+    discarded here since those are covered by _run_seeded_role_hierarchy_check. Nothing is written
+    to the database or to Inventory. When `dry_run` is True, no Inventory gRPC call is made --
+    each tuple is instead validated via `validate_generated_tuples`.
     """
     role_results = []
     all_correct = True
 
-    seeded_roles = SeededRoleV2.objects.select_related("v1_source").prefetch_related("permissions")
+    seeded_roles = SeededRoleV2.objects.select_related("v1_source").prefetch_related("v1_source__access")
+    implicit_resource_service = ImplicitResourceService.from_settings() if seeded_roles.exists() else None
 
     for seeded_role in seeded_roles:
+        v1_role = seeded_role.v1_source
+        if v1_role is None:
+            logger.warning(f"SeededRole {seeded_role.uuid} has no v1_source, cannot generate permission tuples")
+            continue
         try:
-            permission_tuples = [
-                SeededRoleV2._permission_tuple(seeded_role, perm) for perm in seeded_role.permissions.all()
-            ]
+            handler = SeedingInventoryApiDualWriteHandler(role=v1_role)
+            handler.implicit_resource_service = implicit_resource_service
+            all_relations = handler._generate_relations_for_role(for_removal=False)
+            permission_tuples = [rel for rel in all_relations if rel.relation != "child"]
             if not permission_tuples:
                 continue
 
