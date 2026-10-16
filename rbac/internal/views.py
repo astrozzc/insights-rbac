@@ -3282,8 +3282,8 @@ def verify_migration_global(request):
     """GET to verify relations-to-inventory migration correctness without picking a single org.
 
     GET /_private/api/inventory/verify_migration/
-        ?org_ids=<csv>&org_limit=<n>&role_limit=<n>&binding_limit=<n>&group_limit=<n>
-        &car_limit=<n>&workspace_limit=<n>&dry_run=<true|false>
+        ?org_ids=<csv>&org_limit=<n>&smoke_test=<true|false>&role_limit=<n>&binding_limit=<n>
+        &group_limit=<n>&car_limit=<n>&workspace_limit=<n>&dry_run=<true|false>
 
     `dry_run=true` validates the migration's tuple-generation logic (see
     _run_tenant_migration_checks and validate_generated_tuples) with zero Inventory gRPC calls,
@@ -3296,11 +3296,21 @@ def verify_migration_global(request):
     function GET /_private/api/inventory/verify_migration/<org_id>/ uses, so there is a single
     implementation of each check shared by both endpoints) for a set of tenants:
 
-      - `org_ids`: comma-separated list of org_ids to check. If omitted, the `org_limit` most
-        recently created ready tenants are checked instead.
-      - `org_limit` (default 10): caps how many tenants are scanned when `org_ids` is not given.
-        Every tenant checked makes its own batch of Inventory gRPC calls, so an unbounded scan
-        risks timing out the request.
+      - `org_ids`: comma-separated list of org_ids to check. If omitted, no tenants are checked
+        unless `org_limit` or `smoke_test` is also given -- real tenant data is never touched just
+        by hitting this endpoint with no scope at all.
+      - `org_limit`: if given (and `org_ids` is not), checks the `org_limit` most recently created
+        ready tenants instead. Every tenant checked makes its own batch of Inventory gRPC calls, so
+        an unbounded scan risks timing out the request.
+      - `smoke_test=true`: if given (and neither `org_ids` nor `org_limit` is), auto-selects a
+        single, most-recently-created ready tenant to run the per-tenant check suite against. For
+        sanity-checking that the tuple-generation logic itself is sound (especially combined with
+        `dry_run=true`) without having to look up a specific org_id -- not a substitute for
+        targeting a real org with `org_ids` when you actually care about that org's data. The
+        response's "smoke_test" field reports whether this path was taken.
+
+    With none of `org_ids`, `org_limit`, or `smoke_test` given, only the platform-global seeded
+    role checks run; "tenants_checked" is empty.
 
     Tenants without a tenant_mapping are skipped (listed under "tenants_skipped"), not treated as
     failures -- they haven't been bootstrapped yet, so there's nothing to verify. A failure in one
@@ -3310,6 +3320,8 @@ def verify_migration_global(request):
     """
     if request.method != "GET":
         return HttpResponse('Invalid method, only "GET" is allowed.', status=405)
+
+    org_limit_given = request.GET.get("org_limit") is not None
 
     try:
         org_limit = _parse_verify_migration_limit(request, "org_limit", default=10)
@@ -3322,13 +3334,20 @@ def verify_migration_global(request):
         return JsonResponse({"detail": str(e)}, status=400)
 
     dry_run = _parse_verify_migration_dry_run(request)
+    smoke_test = _parse_verify_migration_bool(request, "smoke_test")
 
     org_ids_param = request.GET.get("org_ids")
     if org_ids_param:
         org_ids = [org_id.strip() for org_id in org_ids_param.split(",") if org_id.strip()]
         tenants = list(Tenant.objects.filter(org_id__in=org_ids))
-    else:
+    elif org_limit_given:
         tenants = list(Tenant.objects.filter(ready=True).exclude(tenant_name="public").order_by("-id")[:org_limit])
+    elif smoke_test:
+        tenants = list(Tenant.objects.filter(ready=True).exclude(tenant_name="public").order_by("-id")[:1])
+    else:
+        # No org scope requested -- don't touch any tenant data, just run the platform-global
+        # seeded role checks below.
+        tenants = []
 
     seeded_role_hierarchy = _run_seeded_role_hierarchy_check(dry_run=dry_run)
     seeded_role_permissions = _run_seeded_role_permissions_check(dry_run=dry_run)
@@ -3359,6 +3378,7 @@ def verify_migration_global(request):
     return JsonResponse(
         {
             "dry_run": dry_run,
+            "smoke_test": smoke_test,
             "checks": {
                 "seeded_role_hierarchy": seeded_role_hierarchy,
                 "seeded_role_permissions": seeded_role_permissions,
@@ -3378,9 +3398,14 @@ def verify_migration_global(request):
     )
 
 
+def _parse_verify_migration_bool(request, name: str) -> bool:
+    """Parse a verify_migration query param as a boolean."""
+    return request.GET.get(name, "").lower() in ("true", "1", "yes")
+
+
 def _parse_verify_migration_dry_run(request) -> bool:
     """Parse the dry_run query param as a boolean."""
-    return request.GET.get("dry_run", "").lower() in ("true", "1", "yes")
+    return _parse_verify_migration_bool(request, "dry_run")
 
 
 def validate_generated_tuples(tuples) -> dict:
