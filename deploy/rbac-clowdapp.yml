@@ -1007,7 +1007,7 @@ objects:
         - "--web.listen-address=:9000"
         ports:
         - name: metrics
-          containerPort: 9187
+          containerPort: 9000
         env:
         - name: DATABASE_HOST
           valueFrom:

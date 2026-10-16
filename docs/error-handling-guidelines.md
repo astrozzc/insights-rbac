@@ -23,7 +23,7 @@ v1 returns a flat `errors` array. Each entry has `detail`, `status`, and optiona
 
 ## v2 Error Response Format (RFC 7807 Problem Details)
 
-v2 uses `application/problem+json` content type. Built by `v2response_error_from_errors()` in `management/utils.py`. Structure:
+v2 uses `application/problem+json` content type. Built by `problem_response_body()` in `management/utils.py`. Structure:
 
 ```json
 {
@@ -39,8 +39,8 @@ v2 uses `application/problem+json` content type. Built by `v2response_error_from
 ```
 
 Rules:
-- `type` comes from the `PROBLEM_TYPES` dict (keyed by HTTP status code). Uses RFC 9457 problem type URIs from the TypeSpec `ProblemType` enum (e.g. `http://project-kessel.org/problems/invalid-request`). Omitted when no URI is defined for the status code (e.g. 409). Can be overridden via the `problem_type` parameter for specialized types like `already-exists` or `workspace-not-empty`.
-- `title` comes from the `PROBLEM_TITLES` dict (keyed by HTTP status code: 400, 401, 403, 404, 409, 500).
+- `type` comes from the `STATUS_PROBLEM_TYPES` dict (keyed by HTTP status code). Uses RFC 9457 problem type URIs from the TypeSpec `ProblemType` enum (e.g. `http://project-kessel.org/problems/invalid-request`). Omitted when no URI is defined for the status code. Can be overridden via the `problem_type` parameter for specialized types like `already-exists`.
+- `title` comes from the `PROBLEM_TYPE_TITLES` dict (keyed by problem type).
 - `instance` is included only for PUT/PATCH/DELETE requests.
 - `errors` array is included only when field-level errors exist.
 - `content_type` must be set to `application/problem+json` on the Response.
@@ -116,7 +116,7 @@ Views handle infrastructure-level errors that serializers/services shouldn't kno
 - `OperationalError` (serialization failures, deadlocks) -- return 503 or 500 with retry guidance.
 - `TimeoutError` -- return 500.
 - `ValidationError` (Django core, from model `.save()`) -- flatten with `flatten_validation_error()` and re-raise as `serializers.ValidationError`.
-- `RolesNotFoundError` for bulk operations -- build response directly with `v2response_error_from_errors()`.
+- `RolesNotFoundError` for bulk operations -- build response directly with `problem_response()`.
 
 ## AtomicOperationsMixin (v2 Views)
 
@@ -153,7 +153,7 @@ except ValidationError as e:
 `IntegrityError` is NOT handled by DRF's default handler. Both v1 and v2 custom handlers catch it explicitly:
 
 - v1: wraps in `{"errors": [{"detail": ..., "source": basename, "status": "400"}]}`.
-- v2: wraps in Problem JSON via `v2response_error_from_errors()`.
+- v2: wraps in Problem JSON via `single_problem_response_with_errors_for_context()`.
 
 In services, prefer catching `IntegrityError` and raising a domain exception:
 
@@ -183,7 +183,7 @@ Pattern in services for expected domain errors: no logging needed (the caller de
 1. **New v2 domain errors**: subclass the relevant base (`RoleV2Error`, etc.) or use the shared exceptions in `management/exceptions.py`.
 2. **Always include field attribution** in validation errors: `raise serializers.ValidationError({"field_name": "message"})`, not bare strings.
 3. **Never let domain exceptions leak to the HTTP layer unhandled.** If a new exception type isn't caught by the global handler, DRF returns a generic 500. Either add it to `custom_exception_handler_v2` or catch it in the serializer/view.
-4. **v2 error responses must use Problem JSON.** Use `v2response_error_from_errors()` when building error responses manually in views.
+4. **v2 error responses must use Problem JSON.** Use `problem_response()` when building error responses manually in views.
 5. **Concurrency errors** in v2 views: use `AtomicOperationsMixin`. In workspace views: use the `_handle_operational_error` pattern.
 6. **Do not catch exceptions you cannot handle.** Use bare `raise` (not `raise e`) to preserve tracebacks. Return `None` from error handlers to signal "not my problem."
 7. **Service layer exceptions must be plain Python** (not DRF). This keeps services testable without HTTP infrastructure.

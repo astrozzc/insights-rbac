@@ -181,7 +181,7 @@ The version-routing handler `exception_version_handler` checks the request path 
 Raise these from service layer code; the global exception handler formats them. Do NOT catch and re-raise as `serializers.ValidationError` in views -- let them propagate.
 
 ### Problem titles mapping
-Defined in `management/utils.py:PROBLEM_TITLES`. Standard titles for 400, 401, 403, 404, 409, 500. Do not invent custom titles outside this mapping.
+Defined in `management/utils.py:PROBLEM_TYPE_TITLES`. Standard titles for all used problem types. Do not invent custom titles outside this mapping.
 
 ## Content Negotiation
 
