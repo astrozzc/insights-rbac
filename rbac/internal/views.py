@@ -3204,6 +3204,8 @@ def _run_seeded_role_hierarchy_check(dry_run: bool = False) -> dict:
             continue
         try:
             handler = SeedingInventoryApiDualWriteHandler(role=v1_role)
+            # seeded_roles is non-empty here (we're iterating it), so this was built above.
+            assert implicit_resource_service is not None
             handler.implicit_resource_service = implicit_resource_service
             hierarchy_tuples = handler._check_create_admin_platform_relation(v1_role, for_removal=False)
             if not hierarchy_tuples:
@@ -3291,6 +3293,8 @@ def _run_seeded_role_permissions_check(dry_run: bool = False) -> dict:
             continue
         try:
             handler = SeedingInventoryApiDualWriteHandler(role=v1_role)
+            # seeded_roles is non-empty here (we're iterating it), so this was built above.
+            assert implicit_resource_service is not None
             handler.implicit_resource_service = implicit_resource_service
             all_relations = handler._generate_relations_for_role(for_removal=False)
             permission_tuples = [rel for rel in all_relations if rel.relation != "child"]
