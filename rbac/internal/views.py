@@ -2772,17 +2772,11 @@ def _run_tenant_migration_checks(
                 transaction.set_rollback(True)
 
             if dry_run:
-                validation = validate_generated_tuples(tuples)
-                role_results.append(
-                    {
-                        "role_uuid": str(role.uuid),
-                        "role_name": role.name,
-                        "tuples_generated": len(tuples),
-                        "checked": False,
-                        "validation": validation,
-                    }
+                result, valid = _dry_run_validation_result(
+                    {"role_uuid": str(role.uuid), "role_name": role.name}, tuples
                 )
-                if not validation["valid"]:
+                role_results.append(result)
+                if not valid:
                     roles_all_correct = False
                 continue
 
@@ -2825,16 +2819,9 @@ def _run_tenant_migration_checks(
         try:
             binding_tuples = binding.all_tuples()
             if dry_run:
-                validation = validate_generated_tuples(binding_tuples)
-                binding_results.append(
-                    {
-                        "binding_uuid": str(binding.uuid),
-                        "tuples_generated": len(binding_tuples),
-                        "checked": False,
-                        "validation": validation,
-                    }
-                )
-                if not validation["valid"]:
+                result, valid = _dry_run_validation_result({"binding_uuid": str(binding.uuid)}, binding_tuples)
+                binding_results.append(result)
+                if not valid:
                     bindings_all_correct = False
                 continue
             binding_correct = RoleBindingChecker.check_role_binding(binding_tuples, str(binding.uuid))
@@ -2875,17 +2862,11 @@ def _run_tenant_migration_checks(
         try:
             mapping_tuples = mapping.as_tuples()
             if dry_run:
-                validation = validate_generated_tuples(mapping_tuples)
-                group_binding_results.append(
-                    {
-                        "binding_mapping_id": mapping.id,
-                        "role_uuid": str(mapping.role.uuid),
-                        "tuples_generated": len(mapping_tuples),
-                        "checked": False,
-                        "validation": validation,
-                    }
+                result, valid = _dry_run_validation_result(
+                    {"binding_mapping_id": mapping.id, "role_uuid": str(mapping.role.uuid)}, mapping_tuples
                 )
-                if not validation["valid"]:
+                group_binding_results.append(result)
+                if not valid:
                     group_bindings_all_correct = False
                 continue
             mapping_correct = RoleBindingChecker.check_role_binding(mapping_tuples, str(mapping.id))
@@ -2922,17 +2903,11 @@ def _run_tenant_migration_checks(
         try:
             permission_tuples = [CustomRoleV2._permission_tuple(role, perm) for perm in role.permissions.all()]
             if dry_run:
-                validation = validate_generated_tuples(permission_tuples)
-                permission_results.append(
-                    {
-                        "v2_role_uuid": str(role.uuid),
-                        "v1_role_uuid": v1_role_uuid,
-                        "tuples_generated": len(permission_tuples),
-                        "checked": False,
-                        "validation": validation,
-                    }
+                result, valid = _dry_run_validation_result(
+                    {"v2_role_uuid": str(role.uuid), "v1_role_uuid": v1_role_uuid}, permission_tuples
                 )
-                if not validation["valid"]:
+                permission_results.append(result)
+                if not valid:
                     permissions_all_correct = False
                 continue
             role_permissions_correct = CustomRolePermissionCheckerInstance.check_custom_role_permissions(
@@ -2977,16 +2952,9 @@ def _run_tenant_migration_checks(
                     group_results.append({"group_uuid": str(group.uuid), "tuples_generated": 0, "verified": False})
                 continue
             if dry_run:
-                validation = validate_generated_tuples(relationships)
-                group_results.append(
-                    {
-                        "group_uuid": str(group.uuid),
-                        "tuples_generated": len(relationships),
-                        "checked": False,
-                        "validation": validation,
-                    }
-                )
-                if not validation["valid"]:
+                result, valid = _dry_run_validation_result({"group_uuid": str(group.uuid)}, relationships)
+                group_results.append(result)
+                if not valid:
                     groups_all_correct = False
                 continue
             result = GroupPrincipalChecker.check_relationships(relationships)
@@ -3031,16 +2999,9 @@ def _run_tenant_migration_checks(
                 transaction.set_rollback(True)
 
             if dry_run:
-                validation = validate_generated_tuples(tuples)
-                car_results.append(
-                    {
-                        "request_id": str(car.request_id),
-                        "tuples_generated": len(tuples),
-                        "checked": False,
-                        "validation": validation,
-                    }
-                )
-                if not validation["valid"]:
+                result, valid = _dry_run_validation_result({"request_id": str(car.request_id)}, tuples)
+                car_results.append(result)
+                if not valid:
                     cars_all_correct = False
                 continue
 
@@ -3107,16 +3068,9 @@ def _run_tenant_migration_checks(
                 transaction.set_rollback(True)
 
             if dry_run:
-                validation = validate_generated_tuples(remove_tuples)
-                removed_car_results.append(
-                    {
-                        "request_id": str(car.request_id),
-                        "tuples_generated": len(remove_tuples),
-                        "checked": False,
-                        "validation": validation,
-                    }
-                )
-                if not validation["valid"]:
+                result, valid = _dry_run_validation_result({"request_id": str(car.request_id)}, remove_tuples)
+                removed_car_results.append(result)
+                if not valid:
                     removed_cars_all_correct = False
                 continue
 
@@ -3212,18 +3166,16 @@ def _run_seeded_role_hierarchy_check(dry_run: bool = False) -> dict:
                 continue
 
             if dry_run:
-                validation = validate_generated_tuples(hierarchy_tuples)
-                role_results.append(
+                result, valid = _dry_run_validation_result(
                     {
                         "role_uuid": str(seeded_role.uuid),
                         "role_name": seeded_role.name,
                         "v1_role_name": seeded_role.v1_source.name if seeded_role.v1_source else None,
-                        "tuples_generated": len(hierarchy_tuples),
-                        "checked": False,
-                        "validation": validation,
-                    }
+                    },
+                    hierarchy_tuples,
                 )
-                if not validation["valid"]:
+                role_results.append(result)
+                if not valid:
                     all_correct = False
                 continue
 
@@ -3302,18 +3254,16 @@ def _run_seeded_role_permissions_check(dry_run: bool = False) -> dict:
                 continue
 
             if dry_run:
-                validation = validate_generated_tuples(permission_tuples)
-                role_results.append(
+                result, valid = _dry_run_validation_result(
                     {
                         "role_uuid": str(seeded_role.uuid),
                         "role_name": seeded_role.name,
                         "v1_role_name": seeded_role.v1_source.name if seeded_role.v1_source else None,
-                        "tuples_generated": len(permission_tuples),
-                        "checked": False,
-                        "validation": validation,
-                    }
+                    },
+                    permission_tuples,
                 )
-                if not validation["valid"]:
+                role_results.append(result)
+                if not valid:
                     all_correct = False
                 continue
 
@@ -3507,8 +3457,30 @@ def validate_generated_tuples(tuples) -> dict:
     return {"valid": all_valid, "tuples": tuple_results}
 
 
+def _dry_run_validation_result(extra_fields: dict, tuples) -> tuple[dict, bool]:
+    """Build a dry_run result dict for one checked item, validating its generated tuples.
+
+    Shared by every verify_migration dry_run section that follows the "validate these tuples,
+    record the result, flag the section if invalid" pattern -- `extra_fields` supplies the
+    item-identifying keys (e.g. role_uuid) that differ per section, and is merged ahead of the
+    common tuples_generated/checked/validation keys to keep field order as before.
+
+    Returns (result_dict, valid) -- the caller appends result_dict to its results list and flips
+    its section's all_correct flag when valid is False.
+    """
+    validation = validate_generated_tuples(tuples)
+    result = {**extra_fields, "tuples_generated": len(tuples), "checked": False, "validation": validation}
+    return result, validation["valid"]
+
+
+# verify_migration *_limit query params cap how many items of each resource are checked, since
+# every item checked makes its own Inventory gRPC call (and roles/CARs also take a brief row lock).
+# This upper bound keeps a single request from fanning out into an unbounded number of gRPC calls.
+VERIFY_MIGRATION_MAX_LIMIT = 500
+
+
 def _parse_verify_migration_limit(request, name: str, default: int = 50) -> int:
-    """Parse a non-negative integer query param for verify_migration, raising ValueError if invalid."""
+    """Parse a verify_migration limit query param, raising ValueError if invalid or out of range."""
     raw_value = request.GET.get(name)
     if raw_value is None:
         return default
@@ -3518,6 +3490,8 @@ def _parse_verify_migration_limit(request, name: str, default: int = 50) -> int:
         raise ValueError(f"'{name}' must be an integer.")
     if value < 0:
         raise ValueError(f"'{name}' must be a non-negative integer.")
+    if value > VERIFY_MIGRATION_MAX_LIMIT:
+        raise ValueError(f"'{name}' must not exceed {VERIFY_MIGRATION_MAX_LIMIT}.")
     return value
 
 
