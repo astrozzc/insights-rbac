@@ -18,6 +18,7 @@
 """View for internal tenant management."""
 
 import datetime
+import functools
 import json
 import logging
 import uuid
@@ -30,6 +31,7 @@ from django.core.exceptions import ValidationError
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import connection, transaction
 from django.db.migrations.recorder import MigrationRecorder
+from django.db.models import Q
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils.html import escape
@@ -2576,18 +2578,29 @@ def _run_tenant_migration_checks(
       - bootstrap: tenant/workspace/platform/default-group tuples created when a tenant is bootstrapped
       - workspaces: workspace parent relations (the workspace hierarchy)
       - roles: V2 role relations produced by the role dual-write handler (custom roles)
-      - bindings: role binding relations (resource#binding, binding#role, binding#subject)
+      - bindings: V2 role binding relations (resource#binding, binding#role, binding#subject) for
+        bindings created through the V2 RoleBinding model (e.g. the role-bindings-by-subject API)
+      - group_role_bindings: the same binding relation shape as "bindings", but for role
+        assignments represented as BindingMapping rows instead of RoleBinding rows -- the
+        legacy/V1-compatible representation still used whenever a group (including a custom group
+        holding a *system* role, the most common real-world assignment) is given a role via the
+        group/policy APIs rather than the V2 role-bindings-by-subject API. Custom (non-system)
+        roles' BindingMapping-derived relations are also exercised indirectly by "roles" above, but
+        system roles are excluded there, so this is the only section that verifies a system role's
+        binding to one of this tenant's groups. BindingMapping doesn't carry a tenant FK (system
+        roles belong to the public tenant), so mappings are found by searching for this tenant's
+        group UUIDs inside each mapping's JSON "groups" list
       - role_permissions: custom role permission tuples (role#<permission>@principal:*)
       - group_principals: group membership relations
       - cross_account_requests: relations created for approved cross-account requests targeting
         this org
       - cross_account_requests_removed: relations removed when a cross-account request targeting
-        this org expired -- the inverse of cross_account_requests; a relation still present here
-        is the failure case, since it means the expired grant was never cleaned up. Roles still
-        granted to the same user via a different, currently-approved CAR are excluded from this
-        check, since an expired CAR's role can't be distinguished from one that was never actually
-        approved in the first place, and removal can't be checked for a role another active CAR
-        still legitimately grants
+        this org expired or was denied after approval -- the inverse of cross_account_requests; a
+        relation still present here is the failure case, since it means the grant was never
+        cleaned up. Roles still granted to the same user via a different, currently-approved CAR
+        are excluded from this check, since an expired/denied CAR's role can't be distinguished
+        from one that was never actually approved in the first place, and removal can't be checked
+        for a role another active CAR still legitimately grants
 
     This is read-only: nothing is written to the database or to Inventory. For roles and
     cross-account requests, the relation tuples are recomputed by re-running the same dual-write
@@ -2596,12 +2609,13 @@ def _run_tenant_migration_checks(
     and group memberships also go through their production dual-write handlers
     (InventoryApiDualWriteWorkspaceHandler, InventoryApiDualWriteGroupHandler), but don't need a
     transaction since their tuple-generation methods are pure (no DB writes happen even without
-    one). Role bindings and role permissions are read directly off existing DB state via their
-    own pure tuple-generation methods, with no handler involved at all.
+    one). Role bindings, group role bindings (BindingMapping), and role permissions are read
+    directly off existing DB state via their own pure tuple-generation methods, with no handler
+    involved at all.
 
     When `dry_run` is True, no Inventory gRPC calls are made at all: for workspaces, roles,
-    bindings, role_permissions, group_principals, and cross_account_requests, the same
-    tuple-generation code still runs, and each tuple is validated via `validate_generated_tuples`
+    bindings, group_role_bindings, role_permissions, group_principals, and cross_account_requests,
+    the same tuple-generation code still runs, and each tuple is validated via `validate_generated_tuples`
     instead of checked against Inventory -- proving the migration's tuple-generation logic is
     sound, but NOT that Inventory actually has the tuple or that the Inventory gRPC client code
     (inventory_checker.inventory_api_check) works. For workspaces specifically, dry_run exercises
@@ -2843,6 +2857,58 @@ def _run_tenant_migration_checks(
     if not bindings_all_correct:
         failed_checks.append("bindings")
 
+    group_binding_results = []
+    group_bindings_all_correct = True
+    tenant_group_uuids = list(Group.objects.filter(tenant=tenant).values_list("uuid", flat=True)[:group_limit])
+    if tenant_group_uuids:
+        group_mapping_filter = functools.reduce(
+            lambda acc, group_uuid: acc | Q(mappings__contains={"groups": [str(group_uuid)]}),
+            tenant_group_uuids[1:],
+            Q(mappings__contains={"groups": [str(tenant_group_uuids[0])]}),
+        )
+        group_bindings = (
+            BindingMapping.objects.filter(group_mapping_filter).distinct().select_related("role")[:binding_limit]
+        )
+    else:
+        group_bindings = BindingMapping.objects.none()
+    for mapping in group_bindings:
+        try:
+            mapping_tuples = mapping.as_tuples()
+            if dry_run:
+                validation = validate_generated_tuples(mapping_tuples)
+                group_binding_results.append(
+                    {
+                        "binding_mapping_id": mapping.id,
+                        "role_uuid": str(mapping.role.uuid),
+                        "tuples_generated": len(mapping_tuples),
+                        "checked": False,
+                        "validation": validation,
+                    }
+                )
+                if not validation["valid"]:
+                    group_bindings_all_correct = False
+                continue
+            mapping_correct = RoleBindingChecker.check_role_binding(mapping_tuples, str(mapping.id))
+            group_binding_results.append(
+                {
+                    "binding_mapping_id": mapping.id,
+                    "role_uuid": str(mapping.role.uuid),
+                    "tuples_generated": len(mapping_tuples),
+                    "correct": mapping_correct,
+                }
+            )
+            if not mapping_correct:
+                group_bindings_all_correct = False
+        except Exception as e:
+            logger.exception(f"Error checking BindingMapping {mapping.id} for tenant {org_id}")
+            group_binding_results.append({"binding_mapping_id": mapping.id, "error": str(e)})
+            group_bindings_all_correct = False
+    checks["group_role_bindings"] = {"correct": group_bindings_all_correct, "bindings_checked": group_binding_results}
+    if dry_run:
+        checks["group_role_bindings"]["dry_run"] = True
+    if not group_bindings_all_correct:
+        failed_checks.append("group_role_bindings")
+
     permission_results = []
     permissions_all_correct = True
     custom_roles = (
@@ -3000,11 +3066,15 @@ def _run_tenant_migration_checks(
 
     removed_car_results = []
     removed_cars_all_correct = True
-    expired_cars = CrossAccountRequest.objects.filter(target_org=tenant.org_id, status="expired").prefetch_related(
-        "roles"
-    )[:car_limit]
-    # "expired" also covers never-approved "pending" CARs, so exclude roles still granted to the
-    # same user via another active CAR -- otherwise removal would be falsely flagged as failed.
+    # "expired" covers CARs cleaned up automatically; "denied" covers a previously-approved CAR
+    # whose relations were removed via CrossAccessRequestViewSet.update_status's
+    # DENY_CROSS_ACCOUNT_REQUEST path. Never-approved "pending" CARs that are later denied never
+    # had relations added, so checking them here is harmless (tuples_generated will be 0).
+    expired_cars = CrossAccountRequest.objects.filter(
+        target_org=tenant.org_id, status__in=["expired", "denied"]
+    ).prefetch_related("roles")[:car_limit]
+    # Exclude roles still granted to the same user via another active CAR -- otherwise removal
+    # would be falsely flagged as failed.
     active_roles_by_user: dict[str, set] = {}
     for active_car in CrossAccountRequest.objects.filter(
         target_org=tenant.org_id, status=CrossAccountRequest.STATUS_APPROVED
