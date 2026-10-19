@@ -735,7 +735,7 @@ namespace Workspaces {
       }
     )
     @route("{id}/")
-    @patch(#{implicitOptionality: true})
+    @patch
     op patch(
         @doc("Unique identification")
         @path id: UUID;
