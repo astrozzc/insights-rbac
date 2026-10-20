@@ -79,7 +79,14 @@ def _catch_principal_errors(fn):
 
 
 class GroupV2ViewSet(AtomicOperationsMixin, BaseV2ViewSet):
-    """GroupV2 ViewSet."""
+    """GroupV2 ViewSet.
+
+    No ``AccessFilterBackend`` is used because group visibility is
+    tenant-wide all-or-nothing: ``GroupV2KesselAccessPermission`` checks a
+    single ``rbac_groups_read``/``rbac_groups_write`` relation on the tenant
+    resource (with a narrow self-access exception for listing one's own
+    groups).
+    """
 
     permission_classes = (GroupV2KesselAccessPermission, V2WriteRequiresWorkspacesEnabled)
     serializer_class = GroupV2ResponseSerializer
@@ -242,6 +249,12 @@ class GroupV2ViewSet(AtomicOperationsMixin, BaseV2ViewSet):
         serializer.is_valid(raise_exception=True)
         usernames = set(serializer.validated_data.get("usernames") or [])
         service_account_client_ids = set(serializer.validated_data.get("service_accounts") or [])
+
+        # Resolve the group before any external call, so a group the tenant cannot write to (unknown, or
+        # a read-only public default group) 404s without spending IT/BOP calls or backfilling principals
+        # the caller never gets to use. The result is discarded: _perform_add_principals() re-reads the
+        # group inside its atomic block.
+        self.get_object()
 
         # Validate all identifiers before opening the DB transaction (V1 parity), so that any unknown
         # identifier fails the whole request before the group is modified. Both passes run (unless one
