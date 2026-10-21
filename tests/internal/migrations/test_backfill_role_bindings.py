@@ -273,3 +273,104 @@ class BackfillDefaultRoleBindingsCommandTests(IdentityRequest):
                 call_command("backfill_default_role_bindings", "--all")
 
         self.assertIn("unseeded-org", str(ctx.exception))
+
+
+class BackfillDefaultRoleBindingsAPITests(IdentityRequest):
+    """Tests for the backfill_default_role_bindings internal API endpoint."""
+
+    BACKFILL = "internal.migrations.backfill_role_bindings.backfill_default_role_bindings"
+    URL = "/_private/api/utils/backfill_default_role_bindings/"
+
+    def setUp(self):
+        """Set up internal request context for auth."""
+        super().setUp()
+        self.internal_request_context = self._create_request_context(
+            self.customer_data, self.user_data, is_internal=True
+        )
+        self.request = self.internal_request_context["request"]
+
+    def test_post_backfills_all_tenants(self):
+        """POST without org_ids processes all opted-in tenants."""
+        with patch(self.BACKFILL, return_value=BackfillResult(tenants_processed=5, tenants_backfilled=3)) as mock:
+            response = self.client.post(self.URL, **self.request.META)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["tenants_processed"], 5)
+        self.assertEqual(data["tenants_backfilled"], 3)
+        mock.assert_called_once_with(org_ids=None, batch_size=500)
+
+    def test_post_with_org_ids(self):
+        """POST with org_ids restricts the backfill."""
+        with patch(self.BACKFILL, return_value=BackfillResult()) as mock:
+            response = self.client.post(f"{self.URL}?org_ids=org-1,org-2", **self.request.META)
+
+        self.assertEqual(response.status_code, 200)
+        mock.assert_called_once_with(org_ids=["org-1", "org-2"], batch_size=500)
+
+    def test_post_with_batch_size(self):
+        """POST with batch_size forwards it to the backfill function."""
+        with patch(self.BACKFILL, return_value=BackfillResult()) as mock:
+            response = self.client.post(f"{self.URL}?batch_size=10", **self.request.META)
+
+        self.assertEqual(response.status_code, 200)
+        mock.assert_called_once_with(org_ids=None, batch_size=10)
+
+    def test_post_with_org_ids_and_batch_size(self):
+        """POST with both org_ids and batch_size."""
+        with patch(self.BACKFILL, return_value=BackfillResult()) as mock:
+            response = self.client.post(f"{self.URL}?org_ids=abc&batch_size=50", **self.request.META)
+
+        self.assertEqual(response.status_code, 200)
+        mock.assert_called_once_with(org_ids=["abc"], batch_size=50)
+
+    def test_invalid_batch_size_returns_400(self):
+        """Non-integer batch_size is rejected."""
+        response = self.client.post(f"{self.URL}?batch_size=abc", **self.request.META)
+        self.assertEqual(response.status_code, 400)
+
+    def test_zero_batch_size_returns_400(self):
+        """Zero batch_size is rejected."""
+        response = self.client.post(f"{self.URL}?batch_size=0", **self.request.META)
+        self.assertEqual(response.status_code, 400)
+
+    def test_negative_batch_size_returns_400(self):
+        """Negative batch_size is rejected."""
+        response = self.client.post(f"{self.URL}?batch_size=-1", **self.request.META)
+        self.assertEqual(response.status_code, 400)
+
+    def test_get_not_allowed(self):
+        """GET is rejected with 405."""
+        response = self.client.get(self.URL, **self.request.META)
+        self.assertEqual(response.status_code, 405)
+
+    def test_response_includes_all_result_fields(self):
+        """Response includes all BackfillResult fields."""
+        result = BackfillResult(
+            tenants_processed=10,
+            already_complete=5,
+            tenants_backfilled=3,
+            incomplete_orgs=["inc-org"],
+            failed_orgs=["fail-org"],
+            aborted=False,
+        )
+        with patch(self.BACKFILL, return_value=result):
+            response = self.client.post(self.URL, **self.request.META)
+
+        data = response.json()
+        self.assertEqual(data["tenants_processed"], 10)
+        self.assertEqual(data["already_complete"], 5)
+        self.assertEqual(data["tenants_backfilled"], 3)
+        self.assertEqual(data["incomplete"], 1)
+        self.assertEqual(data["incomplete_orgs"], ["inc-org"])
+        self.assertEqual(data["errors"], 1)
+        self.assertEqual(data["failed_orgs"], ["fail-org"])
+        self.assertFalse(data["aborted"])
+
+    def test_exception_returns_500(self):
+        """An unexpected exception returns a 500 response."""
+        with patch(self.BACKFILL, side_effect=RuntimeError("db gone")):
+            response = self.client.post(self.URL, **self.request.META)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("db gone", response.json()["detail"])
