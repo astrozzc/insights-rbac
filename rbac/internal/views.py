@@ -3682,19 +3682,23 @@ def backfill_default_role_bindings_view(request):
 
     try:
         result = backfill_default_role_bindings(org_ids=org_ids or None, batch_size=batch_size)
-        return JsonResponse(
-            {
-                "tenants_processed": result.tenants_processed,
-                "already_complete": result.already_complete,
-                "tenants_backfilled": result.tenants_backfilled,
-                "incomplete": result.incomplete,
-                "incomplete_orgs": result.incomplete_orgs,
-                "errors": result.errors,
-                "failed_orgs": result.failed_orgs,
-                "aborted": result.aborted,
-            },
-            status=200,
-        )
+        summary = {
+            "tenants_processed": result.tenants_processed,
+            "already_complete": result.already_complete,
+            "tenants_backfilled": result.tenants_backfilled,
+            "incomplete": result.incomplete,
+            "incomplete_orgs": result.incomplete_orgs,
+            "errors": result.errors,
+            "failed_orgs": result.failed_orgs,
+            "aborted": result.aborted,
+        }
+        if result.aborted:
+            response_status = 500
+        elif result.errors or result.incomplete:
+            response_status = 422
+        else:
+            response_status = 200
+        return JsonResponse(summary, status=response_status)
     except Exception as e:
         logger.exception("Error running default role binding backfill")
-        return JsonResponse({"detail": f"Error running backfill: {str(e)}"}, status=500)
+        return JsonResponse({"detail": "Error running backfill"}, status=500)

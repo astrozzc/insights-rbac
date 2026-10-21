@@ -734,8 +734,10 @@ The backfill is available through two interfaces:
    parameters `org_ids` (comma-separated) and `batch_size` (default 500). Returns a JSON summary of the
    run. This endpoint is easier to re-trigger without setting up a new CJI job.
 
-Both walk every opted-in tenant, skip those whose default bindings all exist, and fail if any tenant ends
-up failed or still incomplete — so a green run is the signal that the lazy path can be removed.
+Both walk every opted-in tenant, skip those whose default bindings all exist, and report any tenants
+that remain failed or incomplete. The signal to remove the lazy path is a **complete, unfiltered run**
+(no `--org-ids` / `org_ids`) that finishes with zero failures and zero incomplete tenants. Runs that
+filter by `--org-ids` or `org_ids` only cover the selected tenants and cannot serve as this signal.
 
 **Source:** `rbac/management/role_binding/service.py` (`_ensure_default_bindings_exist`, `create_default_bindings`),
 `rbac/internal/migrations/backfill_role_bindings.py`

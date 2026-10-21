@@ -325,27 +325,35 @@ class BackfillDefaultRoleBindingsAPITests(IdentityRequest):
         mock.assert_called_once_with(org_ids=["abc"], batch_size=50)
 
     def test_invalid_batch_size_returns_400(self):
-        """Non-integer batch_size is rejected."""
-        response = self.client.post(f"{self.URL}?batch_size=abc", **self.request.META)
+        """Non-integer batch_size is rejected without starting the backfill."""
+        with patch(self.BACKFILL) as mock:
+            response = self.client.post(f"{self.URL}?batch_size=abc", **self.request.META)
         self.assertEqual(response.status_code, 400)
+        mock.assert_not_called()
 
     def test_zero_batch_size_returns_400(self):
-        """Zero batch_size is rejected."""
-        response = self.client.post(f"{self.URL}?batch_size=0", **self.request.META)
+        """Zero batch_size is rejected without starting the backfill."""
+        with patch(self.BACKFILL) as mock:
+            response = self.client.post(f"{self.URL}?batch_size=0", **self.request.META)
         self.assertEqual(response.status_code, 400)
+        mock.assert_not_called()
 
     def test_negative_batch_size_returns_400(self):
-        """Negative batch_size is rejected."""
-        response = self.client.post(f"{self.URL}?batch_size=-1", **self.request.META)
+        """Negative batch_size is rejected without starting the backfill."""
+        with patch(self.BACKFILL) as mock:
+            response = self.client.post(f"{self.URL}?batch_size=-1", **self.request.META)
         self.assertEqual(response.status_code, 400)
+        mock.assert_not_called()
 
     def test_get_not_allowed(self):
-        """GET is rejected with 405."""
-        response = self.client.get(self.URL, **self.request.META)
+        """GET is rejected with 405 without starting the backfill."""
+        with patch(self.BACKFILL) as mock:
+            response = self.client.get(self.URL, **self.request.META)
         self.assertEqual(response.status_code, 405)
+        mock.assert_not_called()
 
     def test_response_includes_all_result_fields(self):
-        """Response includes all BackfillResult fields."""
+        """Response includes all BackfillResult fields (partial failure → 422)."""
         result = BackfillResult(
             tenants_processed=10,
             already_complete=5,
@@ -357,6 +365,7 @@ class BackfillDefaultRoleBindingsAPITests(IdentityRequest):
         with patch(self.BACKFILL, return_value=result):
             response = self.client.post(self.URL, **self.request.META)
 
+        self.assertEqual(response.status_code, 422)
         data = response.json()
         self.assertEqual(data["tenants_processed"], 10)
         self.assertEqual(data["already_complete"], 5)
@@ -367,10 +376,41 @@ class BackfillDefaultRoleBindingsAPITests(IdentityRequest):
         self.assertEqual(data["failed_orgs"], ["fail-org"])
         self.assertFalse(data["aborted"])
 
+    def test_errors_returns_422(self):
+        """A result with failed tenants returns 422."""
+        result = BackfillResult(tenants_processed=5, tenants_backfilled=3, failed_orgs=["org-x"])
+        with patch(self.BACKFILL, return_value=result):
+            response = self.client.post(self.URL, **self.request.META)
+
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertEqual(data["errors"], 1)
+        self.assertEqual(data["failed_orgs"], ["org-x"])
+
+    def test_incomplete_returns_422(self):
+        """A result with incomplete tenants returns 422."""
+        result = BackfillResult(tenants_processed=5, tenants_backfilled=3, incomplete_orgs=["org-y"])
+        with patch(self.BACKFILL, return_value=result):
+            response = self.client.post(self.URL, **self.request.META)
+
+        self.assertEqual(response.status_code, 422)
+        data = response.json()
+        self.assertEqual(data["incomplete"], 1)
+
+    def test_aborted_returns_500(self):
+        """An aborted backfill returns 500."""
+        result = BackfillResult(tenants_processed=5, aborted=True, failed_orgs=["a", "b", "c"])
+        with patch(self.BACKFILL, return_value=result):
+            response = self.client.post(self.URL, **self.request.META)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertTrue(response.json()["aborted"])
+
     def test_exception_returns_500(self):
-        """An unexpected exception returns a 500 response."""
+        """An unexpected exception returns a 500 with a fixed error message."""
         with patch(self.BACKFILL, side_effect=RuntimeError("db gone")):
             response = self.client.post(self.URL, **self.request.META)
 
         self.assertEqual(response.status_code, 500)
-        self.assertIn("db gone", response.json()["detail"])
+        self.assertEqual(response.json()["detail"], "Error running backfill")
+        self.assertNotIn("db gone", response.json()["detail"])
