@@ -4646,3 +4646,58 @@ def update_tenant_v2_opt_in(request, org_id: str):
         return JsonResponse({"v2_opted_in": requested_state})
     else:
         raise AssertionError(f"Unexpected method: {request.method}")
+
+
+@require_http_methods(["POST"])
+def backfill_default_role_bindings_view(request):
+    """Backfill default role bindings for V2 opted-in tenants.
+
+    POST /_private/api/utils/backfill_default_role_bindings/
+
+    Query params:
+        org_ids: comma-separated org IDs to restrict the backfill to (optional)
+        batch_size: how many tenant mappings to read at a time (default: 500)
+
+    Returns:
+        JSON response with the backfill result summary.
+    """
+    from internal.migrations.backfill_role_bindings import DEFAULT_BATCH_SIZE, backfill_default_role_bindings
+
+    raw_org_ids = request.GET.get("org_ids")
+    if raw_org_ids is None:
+        org_ids = None
+    else:
+        org_ids = [org_id.strip() for org_id in raw_org_ids.split(",") if org_id.strip()]
+        if not org_ids:
+            return JsonResponse({"detail": "org_ids must contain at least one org ID."}, status=400)
+
+    try:
+        batch_size = int(request.GET.get("batch_size", DEFAULT_BATCH_SIZE))
+    except (ValueError, TypeError):
+        return JsonResponse({"detail": "batch_size must be a positive integer."}, status=400)
+
+    if batch_size <= 0:
+        return JsonResponse({"detail": "batch_size must be a positive integer."}, status=400)
+
+    try:
+        result = backfill_default_role_bindings(org_ids=org_ids, batch_size=batch_size)
+        summary = {
+            "tenants_processed": result.tenants_processed,
+            "already_complete": result.already_complete,
+            "tenants_backfilled": result.tenants_backfilled,
+            "incomplete": result.incomplete,
+            "incomplete_orgs": result.incomplete_orgs,
+            "errors": result.errors,
+            "failed_orgs": result.failed_orgs,
+            "aborted": result.aborted,
+        }
+        if result.aborted:
+            response_status = 500
+        elif result.errors or result.incomplete:
+            response_status = 422
+        else:
+            response_status = 200
+        return JsonResponse(summary, status=response_status)
+    except Exception:
+        logger.exception("Error running default role binding backfill")
+        return JsonResponse({"detail": "Error running backfill"}, status=500)
