@@ -3667,8 +3667,13 @@ def backfill_default_role_bindings_view(request):
     """
     from internal.migrations.backfill_role_bindings import DEFAULT_BATCH_SIZE, backfill_default_role_bindings
 
-    raw_org_ids = request.GET.get("org_ids", "")
-    org_ids = [org_id.strip() for org_id in raw_org_ids.split(",") if org_id.strip()] if raw_org_ids else []
+    raw_org_ids = request.GET.get("org_ids")
+    if raw_org_ids is None:
+        org_ids = None
+    else:
+        org_ids = [org_id.strip() for org_id in raw_org_ids.split(",") if org_id.strip()]
+        if not org_ids:
+            return JsonResponse({"detail": "org_ids must contain at least one org ID."}, status=400)
 
     try:
         batch_size = int(request.GET.get("batch_size", DEFAULT_BATCH_SIZE))
@@ -3679,7 +3684,7 @@ def backfill_default_role_bindings_view(request):
         return JsonResponse({"detail": "batch_size must be a positive integer."}, status=400)
 
     try:
-        result = backfill_default_role_bindings(org_ids=org_ids or None, batch_size=batch_size)
+        result = backfill_default_role_bindings(org_ids=org_ids, batch_size=batch_size)
         summary = {
             "tenants_processed": result.tenants_processed,
             "already_complete": result.already_complete,

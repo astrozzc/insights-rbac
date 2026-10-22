@@ -324,6 +324,21 @@ class BackfillDefaultRoleBindingsAPITests(IdentityRequest):
         self.assertEqual(response.status_code, 200)
         mock.assert_called_once_with(org_ids=["abc"], batch_size=50)
 
+    def test_empty_org_ids_returns_400(self):
+        """Empty org_ids param is rejected to prevent unfiltered backfill."""
+        with patch(self.BACKFILL) as mock:
+            response = self.client.post(f"{self.URL}?org_ids=", **self.request.META)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("org_ids must contain at least one org ID", response.json()["detail"])
+        mock.assert_not_called()
+
+    def test_whitespace_only_org_ids_returns_400(self):
+        """org_ids with only commas/whitespace is rejected."""
+        with patch(self.BACKFILL) as mock:
+            response = self.client.post(f"{self.URL}?org_ids=%20,%20,", **self.request.META)
+        self.assertEqual(response.status_code, 400)
+        mock.assert_not_called()
+
     def test_invalid_batch_size_returns_400(self):
         """Non-integer batch_size is rejected without starting the backfill."""
         with patch(self.BACKFILL) as mock:
