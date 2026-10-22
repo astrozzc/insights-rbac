@@ -3697,6 +3697,6 @@ def backfill_default_role_bindings_view(request):
         else:
             response_status = 200
         return JsonResponse(summary, status=response_status)
-    except Exception as e:
+    except Exception:
         logger.exception("Error running default role binding backfill")
         return JsonResponse({"detail": "Error running backfill"}, status=500)
