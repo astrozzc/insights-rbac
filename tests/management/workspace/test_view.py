@@ -1006,11 +1006,10 @@ class WorkspaceTestsCreateUpdateDelete(TransactionalWorkspaceViewTests):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         status_code = response.data.get("status")
         detail = response.data.get("detail")
-        instance = response.data.get("instance")
         self.assertIsNotNone(detail)
         self.assertEqual(detail, "This field is required.")
         self.assertEqual(status_code, 400)
-        self.assertEqual(instance, None)
+        self.assertNotIn("instance", response.data)
         self.assertEqual(response.get("content-type"), "application/problem+json")
 
     def test_update_duplicate_workspace(self):
