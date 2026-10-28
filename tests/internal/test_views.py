@@ -5747,6 +5747,50 @@ class VerifyMigrationEndpointTests(BaseInternalViewsetTests):
         checked_uuids = [entry.get("role_uuid") for entry in body["checks"]["roles"]["roles_checked"]]
         self.assertNotIn(str(v1_role.uuid), checked_uuids)
 
+    def test_verify_migration_checks_v1_source_roles_on_non_activated_tenants(self):
+        """V1-linked roles must still be verified when V2 writes are not activated.
+
+        v1_source does not distinguish migrated roles from roles created by V1
+        dual-write, so the skip only applies on tenants where V2 writes are
+        activated (the only case where the V1 handler raises V1WriteBlockedError).
+        """
+        v1_role = Role.objects.create(name="dual-written-role", tenant=self.tenant, system=False)
+        CustomRoleV2.objects.create(name="dual-written-role-v2", tenant=self.tenant, v1_source=v1_role)
+
+        response = self.client.get(
+            f"/_private/api/inventory/verify_migration/{self.tenant.org_id}/?dry_run=true", **self.request.META
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertNotIn("roles", body["failed_checks"])
+        checked_uuids = [entry.get("role_uuid") for entry in body["checks"]["roles"]["roles_checked"]]
+        self.assertIn(str(v1_role.uuid), checked_uuids)
+
+    def test_verify_migration_role_limit_applies_after_excluding_migrated_roles(self):
+        """Skipped roles must not consume the role_limit.
+
+        The exclusion happens in the queryset before slicing, so a tenant whose
+        first roles are all migrated still verifies later unlinked roles.
+        """
+        migrated_roles = [
+            Role.objects.create(name=f"migrated-role-{i}", tenant=self.tenant, system=False) for i in range(3)
+        ]
+        for role in migrated_roles:
+            CustomRoleV2.objects.create(name=f"{role.name}-v2", tenant=self.tenant, v1_source=role)
+        unlinked_role = Role.objects.create(name="unlinked-role", tenant=self.tenant, system=False)
+        with transaction.atomic():
+            ensure_v2_write_activated(self.tenant)
+
+        response = self.client.get(
+            f"/_private/api/inventory/verify_migration/{self.tenant.org_id}/" f"?dry_run=true&role_limit=1",
+            **self.request.META,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertNotIn("roles", body["failed_checks"])
+        checked_uuids = [entry.get("role_uuid") for entry in body["checks"]["roles"]["roles_checked"]]
+        self.assertEqual(checked_uuids, [str(unlinked_role.uuid)])
+
     def test_verify_migration_checks_system_role_group_binding_mapping(self):
         """Test that a system role bound to a custom group via BindingMapping is verified.
 
