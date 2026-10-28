@@ -19,6 +19,7 @@
 from abc import abstractmethod
 import logging
 
+from django.db import transaction
 from django.db.models import Count
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -40,7 +41,7 @@ from api.utils import reset_imported_tenants
 from management.audit_log.model import AuditLog
 from management.cache import TenantCache
 from management.group.inventory_api_dual_write_group_handler import InventoryApiDualWriteGroupHandler
-from management.models import BindingMapping, Group, Permission, Policy, Role, Workspace
+from management.models import BindingMapping, CustomRoleV2, Group, Permission, Policy, Role, Workspace
 from management.principal.model import Principal
 from management.inventory_replicator.noop_replicator import NoopReplicator
 from management.inventory_replicator.inventory_replicator import ReplicationEventType
@@ -5727,6 +5728,24 @@ class VerifyMigrationEndpointTests(BaseInternalViewsetTests):
         self.assertTrue(body["checks"]["cross_account_requests_removed"]["dry_run"])
         for mock_obj in self.mocks.values():
             mock_obj.assert_not_called()
+
+    def test_verify_migration_skips_migrated_v1_roles_on_v2_tenants(self):
+        """Test that V1 roles migrated to V2 are skipped instead of failing with V1WriteBlockedError."""
+        v1_role = Role.objects.create(name="migrated-role", tenant=self.tenant, system=False)
+        CustomRoleV2.objects.create(name="migrated-role-v2", tenant=self.tenant, v1_source=v1_role)
+        with transaction.atomic():
+            ensure_v2_write_activated(self.tenant)
+
+        response = self.client.get(
+            f"/_private/api/inventory/verify_migration/{self.tenant.org_id}/?dry_run=true", **self.request.META
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["overall_status"], "pass")
+        self.assertNotIn("roles", body["failed_checks"])
+        self.assertTrue(body["checks"]["roles"]["correct"])
+        checked_uuids = [entry.get("role_uuid") for entry in body["checks"]["roles"]["roles_checked"]]
+        self.assertNotIn(str(v1_role.uuid), checked_uuids)
 
     def test_verify_migration_checks_system_role_group_binding_mapping(self):
         """Test that a system role bound to a custom group via BindingMapping is verified.

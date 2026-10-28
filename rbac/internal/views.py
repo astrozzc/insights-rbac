@@ -2749,7 +2749,15 @@ def _run_tenant_migration_checks(
 
     role_results = []
     roles_all_correct = True
+    # V1 roles that have been migrated to a V2 CustomRoleV2 cannot be replayed through the
+    # V1 dual-write handler -- on tenants with V2 writes activated it raises V1WriteBlockedError.
+    # Their V2 counterparts are validated by the "role_permissions" section below instead.
+    migrated_v1_role_ids = set(
+        CustomRoleV2.objects.filter(v1_source__tenant=tenant).values_list("v1_source_id", flat=True)
+    )
     for role in Role.objects.filter(tenant=tenant, system=False)[:role_limit]:
+        if role.pk in migrated_v1_role_ids:
+            continue
         try:
             tuples = InMemoryTuples()
             with transaction.atomic():
