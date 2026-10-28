@@ -5766,6 +5766,62 @@ class VerifyMigrationEndpointTests(BaseInternalViewsetTests):
         checked_uuids = [entry.get("role_uuid") for entry in body["checks"]["roles"]["roles_checked"]]
         self.assertIn(str(v1_role.uuid), checked_uuids)
 
+    def test_verify_migration_reports_unlinked_v1_roles_as_unverified_on_v2_tenants(self):
+        """Unlinked V1 roles on activated tenants are reported as unverified, not errored.
+
+        The V1 dual-write handler raises V1WriteBlockedError on activated tenants for ANY V1
+        role -- migrated or not -- so unlinked roles cannot be replayed at all. The endpoint
+        must surface them explicitly instead of recording a handler error for the section.
+        """
+        unlinked_role = Role.objects.create(name="unlinked-role", tenant=self.tenant, system=False)
+        with transaction.atomic():
+            ensure_v2_write_activated(self.tenant)
+
+        response = self.client.get(
+            f"/_private/api/inventory/verify_migration/{self.tenant.org_id}/?dry_run=true", **self.request.META
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertNotIn("roles", body["failed_checks"])
+        entry = next(
+            e for e in body["checks"]["roles"]["roles_checked"] if e.get("role_uuid") == str(unlinked_role.uuid)
+        )
+        self.assertFalse(entry["verified"])
+        self.assertIn("reason", entry)
+
+    def test_verify_migration_role_permissions_includes_owner_tuple(self):
+        """The role_permissions section must also validate the V2 owner tuple.
+
+        Regression test: excluding migrated V1 roles from the "roles" section removed the only
+        place their owner tuple (rbac/role:<uuid>#owner@rbac/tenant:<id>) was generated, so a
+        missing owner tuple could leave the migration report marked as passed.
+        """
+        perm = Permission.objects.create(permission="app:res:*", tenant=self.tenant)
+        v2_role = CustomRoleV2.objects.create(name="owner-checked-role", tenant=self.tenant)
+        v2_role.permissions.add(perm)
+
+        response = self.client.get(
+            f"/_private/api/inventory/verify_migration/{self.tenant.org_id}/?dry_run=true", **self.request.META
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertNotIn("role_permissions", body["failed_checks"])
+        entry = next(
+            e for e in body["checks"]["role_permissions"]["roles_checked"] if e["v2_role_uuid"] == str(v2_role.uuid)
+        )
+        tuple_strings = [t["tuple"] for t in entry["validation"]["tuples"]]
+        self.assertTrue(
+            any(f"rbac/role:{v2_role.uuid}#owner@" in tuple_str for tuple_str in tuple_strings),
+            tuple_strings,
+        )
+        # The permission tuple must still be validated alongside the owner tuple.
+        self.assertTrue(
+            any(
+                f"rbac/role:{v2_role.uuid}#" in tuple_str and "#owner@" not in tuple_str for tuple_str in tuple_strings
+            ),
+            tuple_strings,
+        )
+
     def test_verify_migration_role_limit_applies_after_excluding_migrated_roles(self):
         """Skipped roles must not consume the role_limit.
 
